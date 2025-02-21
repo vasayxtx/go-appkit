@@ -20,6 +20,11 @@ type cacheEntry[K comparable, V any] struct {
 	expiresAt time.Time
 }
 
+type singleFlightCallResult[V any] struct {
+	value  V
+	exists bool
+}
+
 // LRUCache represents an LRU cache with eviction mechanism and Prometheus metrics.
 type LRUCache[K comparable, V any] struct {
 	maxEntries int
@@ -29,6 +34,8 @@ type LRUCache[K comparable, V any] struct {
 	mu      sync.RWMutex
 	lruList *list.List
 	cache   map[K]*list.Element // map of cache entries, value is a lruList element
+
+	sfGroup *singleFlightGroup[K, singleFlightCallResult[V]]
 
 	metricsCollector MetricsCollector
 }
@@ -64,6 +71,7 @@ func NewWithOpts[K comparable, V any](maxEntries int, metricsCollector MetricsCo
 		maxEntries:       maxEntries,
 		lruList:          list.New(),
 		cache:            make(map[K]*list.Element),
+		sfGroup:          &singleFlightGroup[K, singleFlightCallResult[V]]{},
 		metricsCollector: metricsCollector,
 		defaultTTL:       opts.DefaultTTL,
 	}, nil
@@ -105,15 +113,15 @@ func (c *LRUCache[K, V]) AddWithTTL(key K, value V, ttl time.Duration) {
 
 // GetOrAdd returns a value from the cache by the provided key.
 // If the key does not exist, it adds a new value to the cache.
-func (c *LRUCache[K, V]) GetOrAdd(key K, valueProvider func() V) (value V, exists bool) {
-	return c.GetOrAddWithTTL(key, valueProvider, c.defaultTTL)
+func (c *LRUCache[K, V]) GetOrAdd(key K, newValue V) (value V, exists bool) {
+	return c.GetOrAddWithTTL(key, newValue, c.defaultTTL)
 }
 
 // GetOrAddWithTTL returns a value from the cache by the provided key.
 // If the key does not exist, it adds a new value to the cache with the provided TTL.
 // Please note that expired entries are not removed immediately,
 // but only when they are accessed or during periodic cleanup (see RunPeriodicCleanup).
-func (c *LRUCache[K, V]) GetOrAddWithTTL(key K, valueProvider func() V, ttl time.Duration) (value V, exists bool) {
+func (c *LRUCache[K, V]) GetOrAddWithTTL(key K, newValue V, ttl time.Duration) (value V, exists bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -125,9 +133,35 @@ func (c *LRUCache[K, V]) GetOrAddWithTTL(key K, valueProvider func() V, ttl time
 	if ttl > 0 {
 		expiresAt = time.Now().Add(ttl)
 	}
-	value = valueProvider()
-	c.addNew(key, value, expiresAt)
-	return value, false
+	c.addNew(key, newValue, expiresAt)
+	return newValue, false
+}
+
+func (c *LRUCache[K, V]) GetOrLoad(
+	key K, valueProvider func(K) (value V, ttl time.Duration, err error),
+) (value V, exists bool, err error) {
+	if val, ok := c.Get(key); ok {
+		return val, true, nil
+	}
+
+	result, doErr := c.sfGroup.Do(key, func() (singleFlightCallResult[V], error) {
+		if val, ok := c.Get(key); ok { // double check after possible concurrent call
+			return singleFlightCallResult[V]{value: val, exists: true}, nil
+		}
+		val, ttl, valErr := valueProvider(key)
+		if valErr != nil {
+			return singleFlightCallResult[V]{value: val, exists: false}, valErr
+		}
+		if ttl <= 0 {
+			ttl = c.defaultTTL
+		}
+		c.AddWithTTL(key, val, ttl)
+		return singleFlightCallResult[V]{value: val, exists: false}, nil
+	})
+	if doErr != nil {
+		return value, false, doErr
+	}
+	return result.value, result.exists, nil
 }
 
 // Remove removes a value from the cache by the provided key and type.
