@@ -14,8 +14,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ssgreg/logf"
-
 	"github.com/acronis/go-appkit/log"
 )
 
@@ -135,7 +133,7 @@ func (h *loggingHandler) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 			lp.fields = append(
 				lp.fields,
 				log.Bool("slow_request", true),
-				log.Field{Key: "time_slots", Type: logf.FieldTypeObject, Any: lp.getTimeSlots()},
+				log.Object("time_slots", lp.getTimeSlots()),
 			)
 		}
 		logger.Info(

@@ -1,4 +1,10 @@
-package grpcutil
+/*
+Copyright © 2025 Acronis International GmbH.
+
+Released under MIT license.
+*/
+
+package interceptor
 
 import (
 	"context"
@@ -13,8 +19,9 @@ const (
 	ctxKeyRequestID ctxKey = iota
 	ctxKeyInternalRequestID
 	ctxKeyLogger
-	ctxKeyRequestStartTime
-	ctxKeyAccessToken
+	ctxKeyLoggingParams
+	ctxKeyTraceID
+	ctxKeyCallStartTime
 )
 
 // NewContextWithRequestID creates a new context with external request id.
@@ -37,14 +44,14 @@ func GetInternalRequestIDFromContext(ctx context.Context) string {
 	return getStringFromContext(ctx, ctxKeyInternalRequestID)
 }
 
-// NewContextWithRequestStartTime creates a new context with request start time.
-func NewContextWithRequestStartTime(ctx context.Context, startTime time.Time) context.Context {
-	return context.WithValue(ctx, ctxKeyRequestStartTime, startTime)
+// NewContextWithCallStartTime creates a new context with request start time.
+func NewContextWithCallStartTime(ctx context.Context, startTime time.Time) context.Context {
+	return context.WithValue(ctx, ctxKeyCallStartTime, startTime)
 }
 
-// GetRequestStartTimeFromContext extracts request start time from the context.
-func GetRequestStartTimeFromContext(ctx context.Context) time.Time {
-	startTime, _ := ctx.Value(ctxKeyRequestStartTime).(time.Time)
+// GetCallStartTimeFromContext extracts request start time from the context.
+func GetCallStartTimeFromContext(ctx context.Context) time.Time {
+	startTime, _ := ctx.Value(ctxKeyCallStartTime).(time.Time)
 	return startTime
 }
 
@@ -62,18 +69,28 @@ func GetLoggerFromContext(ctx context.Context) log.FieldLogger {
 	return value.(log.FieldLogger)
 }
 
-// NewContextWithAccessToken creates a new context containing incoming service access token.
-func NewContextWithAccessToken(ctx context.Context, accessToken string) context.Context {
-	return context.WithValue(ctx, ctxKeyAccessToken, accessToken)
+// NewContextWithLoggingParams creates a new context with logging params.
+func NewContextWithLoggingParams(ctx context.Context, loggingParams *LoggingParams) context.Context {
+	return context.WithValue(ctx, ctxKeyLoggingParams, loggingParams)
 }
 
-// GetAccessTokenFromContext extracts incoming access token from the context.
-func GetAccessTokenFromContext(ctx context.Context) string {
-	value := ctx.Value(ctxKeyAccessToken)
+// GetLoggingParamsFromContext extracts logging params from the context.
+func GetLoggingParamsFromContext(ctx context.Context) *LoggingParams {
+	value := ctx.Value(ctxKeyLoggingParams)
 	if value == nil {
-		return ""
+		return nil
 	}
-	return value.(string)
+	return value.(*LoggingParams)
+}
+
+// NewContextWithTraceID creates a new context with trace id.
+func NewContextWithTraceID(ctx context.Context, traceID string) context.Context {
+	return context.WithValue(ctx, ctxKeyTraceID, traceID)
+}
+
+// GetTraceIDFromContext extracts trace id from the context.
+func GetTraceIDFromContext(ctx context.Context) string {
+	return getStringFromContext(ctx, ctxKeyTraceID)
 }
 
 func getStringFromContext(ctx context.Context, key ctxKey) string {

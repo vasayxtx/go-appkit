@@ -1,4 +1,10 @@
-package grpcutil
+/*
+Copyright © 2025 Acronis International GmbH.
+
+Released under MIT license.
+*/
+
+package interceptor
 
 import (
 	"context"
