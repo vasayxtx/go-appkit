@@ -8,6 +8,7 @@ package interceptor
 
 import (
 	"context"
+	"google.golang.org/grpc"
 	"time"
 
 	"github.com/acronis/go-appkit/log"
@@ -99,4 +100,15 @@ func getStringFromContext(ctx context.Context, key ctxKey) string {
 		return ""
 	}
 	return value.(string)
+}
+
+// wrappedServerStream wraps grpc.ServerStream to provide a custom context for the stream.
+type wrappedServerStream struct {
+	grpc.ServerStream
+	ctx context.Context
+}
+
+// Context returns the custom context for the wrapped server stream.
+func (s *wrappedServerStream) Context() context.Context {
+	return s.ctx
 }

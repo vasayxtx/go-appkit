@@ -73,17 +73,65 @@ func RequestIDServerUnaryInterceptor(options ...RequestIDOption) func(
 		if requestID == "" {
 			requestID = opts.GenerateID()
 		}
-		ctx = NewContextWithRequestID(ctx, requestID)
-		if err := grpc.SetHeader(ctx, metadata.Pairs(headerRequestIDKey, requestID)); err != nil {
+		internalRequestID := opts.GenerateInternalID()
+
+		headerMD := metadata.Pairs(
+			headerRequestIDKey, requestID,
+			headerRequestInternalIDKey, internalRequestID,
+		)
+		if err := grpc.SetHeader(ctx, headerMD); err != nil {
 			return nil, err
+		}
+
+		ctx = NewContextWithRequestID(ctx, requestID)
+		ctx = NewContextWithInternalRequestID(ctx, internalRequestID)
+
+		return handler(ctx, req)
+	}
+}
+
+// RequestIDServerStreamInterceptor is a gRPC stream interceptor that extracts the request ID from the incoming context metadata
+// and attaches it to the context. If the request ID is missing, a new one is generated.
+func RequestIDServerStreamInterceptor(options ...RequestIDOption) func(
+	srv interface{},
+	ss grpc.ServerStream,
+	_ *grpc.StreamServerInfo,
+	handler grpc.StreamHandler,
+) error {
+	opts := requestIDOptions{
+		GenerateID:         newID,
+		GenerateInternalID: newID,
+	}
+	for _, option := range options {
+		option(&opts)
+	}
+
+	return func(srv interface{}, ss grpc.ServerStream, _ *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
+		var requestID string
+		if md, ok := metadata.FromIncomingContext(ss.Context()); ok {
+			requestIDList := md.Get(headerRequestIDKey)
+			if len(requestIDList) > 0 {
+				requestID = requestIDList[0]
+			}
+		}
+		if requestID == "" {
+			requestID = opts.GenerateID()
 		}
 
 		internalRequestID := opts.GenerateInternalID()
-		ctx = NewContextWithInternalRequestID(ctx, internalRequestID)
-		if err := grpc.SetHeader(ctx, metadata.Pairs(headerRequestInternalIDKey, internalRequestID)); err != nil {
-			return nil, err
+
+		headerMD := metadata.Pairs(
+			headerRequestIDKey, requestID,
+			headerRequestInternalIDKey, internalRequestID,
+		)
+		if err := ss.SetHeader(headerMD); err != nil {
+			return err
 		}
 
-		return handler(ctx, req)
+		ctx := NewContextWithRequestID(ss.Context(), requestID)
+		ctx = NewContextWithInternalRequestID(ctx, internalRequestID)
+
+		wrappedStream := &wrappedServerStream{ServerStream: ss, ctx: ctx}
+		return handler(srv, wrappedStream)
 	}
 }
