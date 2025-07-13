@@ -19,8 +19,9 @@ import (
 
 type testService struct {
 	grpc_testing.UnimplementedTestServiceServer
-	lastCtx          context.Context
-	unaryCallHandler func(ctx context.Context, req *grpc_testing.SimpleRequest) (*grpc_testing.SimpleResponse, error)
+	lastCtx                    context.Context
+	unaryCallHandler           func(ctx context.Context, req *grpc_testing.SimpleRequest) (*grpc_testing.SimpleResponse, error)
+	streamingOutputCallHandler func(req *grpc_testing.StreamingOutputCallRequest, stream grpc_testing.TestService_StreamingOutputCallServer) error
 }
 
 func (s *testService) UnaryCall(ctx context.Context, req *grpc_testing.SimpleRequest) (*grpc_testing.SimpleResponse, error) {
@@ -31,15 +32,33 @@ func (s *testService) UnaryCall(ctx context.Context, req *grpc_testing.SimpleReq
 	return &grpc_testing.SimpleResponse{Payload: &grpc_testing.Payload{Body: []byte("test")}}, nil
 }
 
+func (s *testService) StreamingOutputCall(req *grpc_testing.StreamingOutputCallRequest, stream grpc_testing.TestService_StreamingOutputCallServer) error {
+	s.lastCtx = stream.Context()
+	if s.streamingOutputCallHandler != nil {
+		return s.streamingOutputCallHandler(req, stream)
+	}
+	// Default implementation: send a single response
+	return stream.Send(&grpc_testing.StreamingOutputCallResponse{
+		Payload: &grpc_testing.Payload{Body: []byte("test-stream")},
+	})
+}
+
 func (s *testService) SwitchUnaryCallHandler(
 	handler func(ctx context.Context, req *grpc_testing.SimpleRequest) (*grpc_testing.SimpleResponse, error),
 ) {
 	s.unaryCallHandler = handler
 }
 
+func (s *testService) SwitchStreamingOutputCallHandler(
+	handler func(req *grpc_testing.StreamingOutputCallRequest, stream grpc_testing.TestService_StreamingOutputCallServer) error,
+) {
+	s.streamingOutputCallHandler = handler
+}
+
 func (s *testService) Reset() {
 	s.lastCtx = nil
 	s.unaryCallHandler = nil
+	s.streamingOutputCallHandler = nil
 }
 
 func startTestService(
