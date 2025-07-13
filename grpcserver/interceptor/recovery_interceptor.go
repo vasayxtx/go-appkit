@@ -24,17 +24,17 @@ const (
 
 var InternalError = status.Error(codes.Internal, "Internal error")
 
-// RecoveryOpts represents options for RecoveryServerUnaryInterceptor.
-type RecoveryOpts struct {
+// recoveryOptions represents options for RecoveryServerUnaryInterceptor.
+type recoveryOptions struct {
 	StackSize int
 }
 
-// RecoveryOption is a function type for configuring RecoveryOpts.
-type RecoveryOption func(*RecoveryOpts)
+// RecoveryOption is a function type for configuring recoveryOptions.
+type RecoveryOption func(*recoveryOptions)
 
 // WithRecoveryStackSize sets the stack size for logging stack traces.
 func WithRecoveryStackSize(size int) RecoveryOption {
-	return func(opts *RecoveryOpts) {
+	return func(opts *recoveryOptions) {
 		opts.StackSize = size
 	}
 }
@@ -46,7 +46,7 @@ func RecoveryServerUnaryInterceptor(options ...RecoveryOption) func(
 	_ *grpc.UnaryServerInfo,
 	handler grpc.UnaryHandler,
 ) (interface{}, error) {
-	opts := RecoveryOpts{
+	opts := recoveryOptions{
 		StackSize: RecoveryDefaultStackSize,
 	}
 	for _, option := range options {

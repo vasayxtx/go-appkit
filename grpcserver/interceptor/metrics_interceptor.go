@@ -186,16 +186,16 @@ func (pm *PrometheusMetrics) ObserveCallFinish(
 }
 
 // MetricsOption is a function type for configuring the metrics interceptor.
-type MetricsOption func(*metricsConfig)
+type MetricsOption func(*metricsOptions)
 
-// metricsConfig holds the configuration for the metrics interceptor.
-type metricsConfig struct {
+// metricsOptions holds options for configuring the metrics interceptor.
+type metricsOptions struct {
 	excludedMethods []string
 }
 
 // WithMetricsExcludedMethods returns an option that excludes the specified methods from metrics collection.
 func WithMetricsExcludedMethods(methods ...string) MetricsOption {
-	return func(c *metricsConfig) {
+	return func(c *metricsOptions) {
 		c.excludedMethods = append(c.excludedMethods, methods...)
 	}
 }
@@ -205,7 +205,7 @@ func MetricsServerUnaryInterceptor(
 	collector MetricsCollector,
 	opts ...MetricsOption,
 ) grpc.UnaryServerInterceptor {
-	config := &metricsConfig{}
+	config := &metricsOptions{}
 	for _, opt := range opts {
 		opt(config)
 	}
