@@ -17,9 +17,10 @@ import (
 )
 
 const (
-	grpcCallMetricsLabelService = "grpc_service"
-	grpcCallMetricsLabelMethod  = "grpc_method"
-	grpcCallMetricsLabelCode    = "grpc_code"
+	callMetricsLabelService    = "grpc_service"
+	callMetricsLabelMethod     = "grpc_method"
+	callMetricsLabelMethodType = "grpc_method_type"
+	callMetricsLabelCode       = "grpc_code"
 )
 
 // CallInfoMetrics represents a call info for collecting metrics.
@@ -28,16 +29,23 @@ type CallInfoMetrics struct {
 	Method  string
 }
 
+type CallMethodType string
+
+const (
+	CallMethodTypeUnary  CallMethodType = "unary"
+	CallMethodTypeStream CallMethodType = "stream"
+)
+
 // MetricsCollector is an interface for collecting metrics for incoming gRPC calls.
 type MetricsCollector interface {
 	// IncInFlightCalls increments the counter of in-flight calls.
-	IncInFlightCalls(callInfo CallInfoMetrics)
+	IncInFlightCalls(callInfo CallInfoMetrics, methodType CallMethodType)
 
 	// DecInFlightCalls decrements the counter of in-flight calls.
-	DecInFlightCalls(callInfo CallInfoMetrics)
+	DecInFlightCalls(callInfo CallInfoMetrics, methodType CallMethodType)
 
 	// ObserveCallFinish observes the duration of the call and the status code.
-	ObserveCallFinish(callInfo CallInfoMetrics, code codes.Code, startTime time.Time)
+	ObserveCallFinish(callInfo CallInfoMetrics, methodType CallMethodType, code codes.Code, startTime time.Time)
 }
 
 // DefaultPrometheusDurationBuckets is default buckets into which observations of serving gRPC calls are counted.
@@ -111,9 +119,10 @@ func NewPrometheusMetrics(opts ...PrometheusOption) *PrometheusMetrics {
 			ConstLabels: config.constLabels,
 		},
 		makeLabelNames(
-			grpcCallMetricsLabelService,
-			grpcCallMetricsLabelMethod,
-			grpcCallMetricsLabelCode,
+			callMetricsLabelService,
+			callMetricsLabelMethod,
+			callMetricsLabelMethodType,
+			callMetricsLabelCode,
 		),
 	)
 
@@ -125,8 +134,9 @@ func NewPrometheusMetrics(opts ...PrometheusOption) *PrometheusMetrics {
 			ConstLabels: config.constLabels,
 		},
 		makeLabelNames(
-			grpcCallMetricsLabelService,
-			grpcCallMetricsLabelMethod,
+			callMetricsLabelService,
+			callMetricsLabelMethod,
+			callMetricsLabelMethodType,
 		),
 	)
 
@@ -159,29 +169,32 @@ func (pm *PrometheusMetrics) Unregister() {
 }
 
 // IncInFlightCalls increments the counter of in-flight calls.
-func (pm *PrometheusMetrics) IncInFlightCalls(callInfo CallInfoMetrics) {
+func (pm *PrometheusMetrics) IncInFlightCalls(callInfo CallInfoMetrics, methodType CallMethodType) {
 	pm.InFlight.With(prometheus.Labels{
-		grpcCallMetricsLabelService: callInfo.Service,
-		grpcCallMetricsLabelMethod:  callInfo.Method,
+		callMetricsLabelService:    callInfo.Service,
+		callMetricsLabelMethod:     callInfo.Method,
+		callMetricsLabelMethodType: string(methodType),
 	}).Inc()
 }
 
 // DecInFlightCalls decrements the counter of in-flight calls.
-func (pm *PrometheusMetrics) DecInFlightCalls(callInfo CallInfoMetrics) {
+func (pm *PrometheusMetrics) DecInFlightCalls(callInfo CallInfoMetrics, methodType CallMethodType) {
 	pm.InFlight.With(prometheus.Labels{
-		grpcCallMetricsLabelService: callInfo.Service,
-		grpcCallMetricsLabelMethod:  callInfo.Method,
+		callMetricsLabelService:    callInfo.Service,
+		callMetricsLabelMethod:     callInfo.Method,
+		callMetricsLabelMethodType: string(methodType),
 	}).Dec()
 }
 
 // ObserveCallFinish observes the duration of the call and the status code.
 func (pm *PrometheusMetrics) ObserveCallFinish(
-	callInfo CallInfoMetrics, code codes.Code, startTime time.Time,
+	callInfo CallInfoMetrics, methodType CallMethodType, code codes.Code, startTime time.Time,
 ) {
 	pm.Durations.With(prometheus.Labels{
-		grpcCallMetricsLabelService: callInfo.Service,
-		grpcCallMetricsLabelMethod:  callInfo.Method,
-		grpcCallMetricsLabelCode:    code.String(),
+		callMetricsLabelService:    callInfo.Service,
+		callMetricsLabelMethod:     callInfo.Method,
+		callMetricsLabelCode:       code.String(),
+		callMetricsLabelMethodType: string(methodType),
 	}).Observe(time.Since(startTime).Seconds())
 }
 
@@ -200,6 +213,36 @@ func WithMetricsExcludedMethods(methods ...string) MetricsOption {
 	}
 }
 
+// isMethodExcluded checks if the given method is in the excluded methods list.
+func isMethodExcluded(fullMethod string, excludedMethods []string) bool {
+	for _, excludedMethod := range excludedMethods {
+		if fullMethod == excludedMethod {
+			return true
+		}
+	}
+	return false
+}
+
+// prepareCallMetrics prepares the call metrics information and manages start time.
+func prepareCallMetrics(ctx context.Context, fullMethod string) (
+	newCtx context.Context, callInfo CallInfoMetrics, startTime time.Time, startTimeGenerated bool,
+) {
+	startTime = GetCallStartTimeFromContext(ctx)
+	if startTime.IsZero() {
+		startTime = time.Now()
+		ctx = NewContextWithCallStartTime(ctx, startTime)
+		startTimeGenerated = true
+	}
+
+	service, method := splitFullMethodName(fullMethod)
+	callInfo = CallInfoMetrics{
+		Service: service,
+		Method:  method,
+	}
+
+	return ctx, callInfo, startTime, startTimeGenerated
+}
+
 // MetricsServerUnaryInterceptor is an interceptor that collects metrics for incoming gRPC calls.
 func MetricsServerUnaryInterceptor(
 	collector MetricsCollector,
@@ -209,34 +252,56 @@ func MetricsServerUnaryInterceptor(
 	for _, opt := range opts {
 		opt(config)
 	}
-
 	return func(
 		ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler,
 	) (interface{}, error) {
-		for _, excludedMethod := range config.excludedMethods {
-			if info.FullMethod == excludedMethod {
-				return handler(ctx, req)
+		if isMethodExcluded(info.FullMethod, config.excludedMethods) {
+			return handler(ctx, req)
+		}
+
+		ctx, callInfo, startTime, _ := prepareCallMetrics(ctx, info.FullMethod)
+
+		collector.IncInFlightCalls(callInfo, CallMethodTypeUnary)
+		defer collector.DecInFlightCalls(callInfo, CallMethodTypeUnary)
+
+		resp, err := handler(ctx, req)
+		collector.ObserveCallFinish(callInfo, CallMethodTypeUnary, getCodeFromError(err), startTime)
+		return resp, err
+	}
+}
+
+// MetricsServerStreamInterceptor is an interceptor that collects metrics for incoming gRPC stream calls.
+func MetricsServerStreamInterceptor(
+	collector MetricsCollector,
+	opts ...MetricsOption,
+) grpc.StreamServerInterceptor {
+	config := &metricsOptions{}
+	for _, opt := range opts {
+		opt(config)
+	}
+	return func(
+		srv interface{}, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler,
+	) error {
+		if isMethodExcluded(info.FullMethod, config.excludedMethods) {
+			return handler(srv, ss)
+		}
+
+		ctx, callInfo, startTime, startTimeGenerated := prepareCallMetrics(ss.Context(), info.FullMethod)
+
+		collector.IncInFlightCalls(callInfo, CallMethodTypeStream)
+		defer collector.DecInFlightCalls(callInfo, CallMethodTypeStream)
+
+		nextSrvStream := ss
+		if startTimeGenerated {
+			nextSrvStream = &wrappedServerStream{
+				ServerStream: ss,
+				ctx:          ctx,
 			}
 		}
 
-		startTime := GetCallStartTimeFromContext(ctx)
-		if startTime.IsZero() {
-			startTime = time.Now()
-			ctx = NewContextWithCallStartTime(ctx, startTime)
-		}
-
-		service, method := splitFullMethodName(info.FullMethod)
-		callInfo := CallInfoMetrics{
-			Service: service,
-			Method:  method,
-		}
-
-		collector.IncInFlightCalls(callInfo)
-		defer collector.DecInFlightCalls(callInfo)
-
-		resp, err := handler(ctx, req)
-		collector.ObserveCallFinish(callInfo, getCodeFromError(err), startTime)
-		return resp, err
+		err := handler(srv, nextSrvStream)
+		collector.ObserveCallFinish(callInfo, CallMethodTypeStream, getCodeFromError(err), startTime)
+		return err
 	}
 }
 

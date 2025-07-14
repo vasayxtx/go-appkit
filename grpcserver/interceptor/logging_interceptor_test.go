@@ -39,7 +39,7 @@ func TestLoggingServerUnaryInterceptor(t *testing.T) {
 		require.NotEmpty(t, getLogFieldAsString(logEntry, "int_request_id"))
 		requireLogFieldString(t, logEntry, "grpc_service", "grpc.testing.TestService")
 		requireLogFieldString(t, logEntry, "grpc_method", "UnaryCall")
-		requireLogFieldString(t, logEntry, "grpc_method_type", methodTypeUnary)
+		requireLogFieldString(t, logEntry, "grpc_method_type", string(CallMethodTypeUnary))
 		require.True(t, strings.HasPrefix(getLogFieldAsString(logEntry, "remote_addr"), "127.0.0.1:"))
 		requireLogFieldString(t, logEntry, "user_agent", headerUserAgent+" grpc-go/"+grpc.Version)
 	}
@@ -562,7 +562,7 @@ func TestLoggingServerStreamInterceptor(t *testing.T) {
 		require.NotEmpty(t, getLogFieldAsString(logEntry, "int_request_id"))
 		requireLogFieldString(t, logEntry, "grpc_service", "grpc.testing.TestService")
 		requireLogFieldString(t, logEntry, "grpc_method", "StreamingOutputCall")
-		requireLogFieldString(t, logEntry, "grpc_method_type", methodTypeStream)
+		requireLogFieldString(t, logEntry, "grpc_method_type", string(CallMethodTypeStream))
 		require.True(t, strings.HasPrefix(getLogFieldAsString(logEntry, "remote_addr"), "127.0.0.1:"))
 		requireLogFieldString(t, logEntry, "user_agent", headerUserAgent+" grpc-go/"+grpc.Version)
 	}

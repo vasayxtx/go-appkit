@@ -23,11 +23,7 @@ import (
 	"github.com/acronis/go-appkit/log"
 )
 
-const (
-	headerUserAgentKey = "user-agent"
-	methodTypeUnary    = "unary"
-	methodTypeStream   = "stream"
-)
+const headerUserAgentKey = "user-agent"
 
 const defaultSlowCallThreshold = 1 * time.Second
 
@@ -106,54 +102,28 @@ func LoggingServerUnaryInterceptor(logger log.FieldLogger, options ...LoggingOpt
 	info *grpc.UnaryServerInfo,
 	handler grpc.UnaryHandler,
 ) (interface{}, error) {
-	opts := &loggingOptions{
-		slowCallThreshold: defaultSlowCallThreshold,
-	}
+	opts := &loggingOptions{slowCallThreshold: defaultSlowCallThreshold}
 	for _, option := range options {
 		option(opts)
 	}
 	return func(
 		ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler,
 	) (interface{}, error) {
-		startTime := GetCallStartTimeFromContext(ctx)
-		if startTime.IsZero() {
-			startTime = time.Now()
-			ctx = NewContextWithCallStartTime(ctx, startTime)
-		}
-
-		loggerForNext := logger
-		if opts.customLoggerProvider != nil {
-			if l := opts.customLoggerProvider(ctx, info); l != nil {
-				loggerForNext = l
+		loggerProvider := func(ctx context.Context) log.FieldLogger {
+			if opts.customLoggerProvider != nil {
+				if l := opts.customLoggerProvider(ctx, info); l != nil {
+					return l
+				}
 			}
+			return logger
 		}
-		loggerForNext = loggerForNext.With(
-			log.String("request_id", GetRequestIDFromContext(ctx)),
-			log.String("int_request_id", GetInternalRequestIDFromContext(ctx)),
-			log.String("trace_id", GetTraceIDFromContext(ctx)),
-		)
-
-		logFields := buildCommonLogFields(ctx, info.FullMethod, methodTypeUnary, opts)
-
-		logger = loggerForNext.With(logFields...)
-		if opts.addCallInfoToLogger {
-			loggerForNext = logger
-		}
-
-		noLog := isLoggingDisabled(info.FullMethod, opts.excludedMethods)
-
-		if opts.callStart && !noLog {
-			logger.Info("gRPC call started")
-		}
-
-		lp := &LoggingParams{}
-		ctx = NewContextWithLoggingParams(NewContextWithLogger(ctx, loggerForNext), lp)
-
-		resp, err := handler(ctx, req)
-		duration := time.Since(startTime)
-
-		logCallCompletion(logger, logFields, lp, duration, err, opts, info.FullMethod)
-
+		var resp any
+		var err error
+		loggingServerInterceptor(ctx, CallMethodTypeUnary, loggerProvider, info.FullMethod, opts,
+			func(ctx context.Context) error {
+				resp, err = handler(ctx, req)
+				return err
+			})
 		return resp, err
 	}
 }
@@ -165,67 +135,96 @@ func LoggingServerStreamInterceptor(logger log.FieldLogger, options ...LoggingOp
 	info *grpc.StreamServerInfo,
 	handler grpc.StreamHandler,
 ) error {
-	opts := &loggingOptions{
-		slowCallThreshold: defaultSlowCallThreshold,
-	}
+	opts := &loggingOptions{slowCallThreshold: defaultSlowCallThreshold}
 	for _, option := range options {
 		option(opts)
 	}
 	return func(
 		srv interface{}, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler,
 	) error {
-		ctx := ss.Context()
-		startTime := GetCallStartTimeFromContext(ctx)
-		if startTime.IsZero() {
-			startTime = time.Now()
-			ctx = NewContextWithCallStartTime(ctx, startTime)
-		}
-
-		loggerForNext := logger
-		if opts.customStreamLoggerProvider != nil {
-			if l := opts.customStreamLoggerProvider(ctx, info); l != nil {
-				loggerForNext = l
+		loggerProvider := func(ctx context.Context) log.FieldLogger {
+			if opts.customStreamLoggerProvider != nil {
+				if l := opts.customStreamLoggerProvider(ctx, info); l != nil {
+					return l
+				}
 			}
+			return logger
 		}
-		loggerForNext = loggerForNext.With(
-			log.String("request_id", GetRequestIDFromContext(ctx)),
-			log.String("int_request_id", GetInternalRequestIDFromContext(ctx)),
-			log.String("trace_id", GetTraceIDFromContext(ctx)),
-		)
-
-		logFields := buildCommonLogFields(ctx, info.FullMethod, methodTypeStream, opts)
-
-		logger = loggerForNext.With(logFields...)
-		if opts.addCallInfoToLogger {
-			loggerForNext = logger
-		}
-
-		noLog := isLoggingDisabled(info.FullMethod, opts.excludedMethods)
-
-		if opts.callStart && !noLog {
-			logger.Info("gRPC call started")
-		}
-
-		lp := &LoggingParams{}
-		ctx = NewContextWithLoggingParams(NewContextWithLogger(ctx, loggerForNext), lp)
-
-		// Create a wrapped stream with the updated context
-		wrappedStream := &wrappedServerStream{
-			ServerStream: ss,
-			ctx:          ctx,
-		}
-
-		err := handler(srv, wrappedStream)
-		duration := time.Since(startTime)
-
-		logCallCompletion(logger, logFields, lp, duration, err, opts, info.FullMethod)
-
+		var err error
+		loggingServerInterceptor(ss.Context(), CallMethodTypeStream, loggerProvider, info.FullMethod, opts,
+			func(ctx context.Context) error {
+				wrappedStream := &wrappedServerStream{ServerStream: ss, ctx: ctx}
+				err = handler(srv, wrappedStream)
+				return err
+			})
 		return err
 	}
 }
 
-// buildCommonLogFields builds the common log fields for both unary and stream interceptors
-func buildCommonLogFields(ctx context.Context, fullMethod, methodType string, opts *loggingOptions) []log.Field {
+func loggingServerInterceptor(
+	ctx context.Context,
+	methodType CallMethodType,
+	loggerProvider func(ctx context.Context) log.FieldLogger,
+	fullMethod string,
+	opts *loggingOptions,
+	handler func(ctx context.Context) error,
+) {
+	startTime := GetCallStartTimeFromContext(ctx)
+	if startTime.IsZero() {
+		startTime = time.Now()
+		ctx = NewContextWithCallStartTime(ctx, startTime)
+	}
+
+	loggerForNext := loggerProvider(ctx)
+	loggerForNext = loggerForNext.With(
+		log.String("request_id", GetRequestIDFromContext(ctx)),
+		log.String("int_request_id", GetInternalRequestIDFromContext(ctx)),
+		log.String("trace_id", GetTraceIDFromContext(ctx)),
+	)
+
+	logFields := buildCallInfoLogFields(ctx, fullMethod, methodType, opts)
+	logger := loggerForNext.With(logFields...)
+	if opts.addCallInfoToLogger {
+		loggerForNext = logger
+	}
+
+	noLog := isLoggingDisabled(fullMethod, opts.excludedMethods)
+
+	if opts.callStart && !noLog {
+		logger.Info("gRPC call started")
+	}
+
+	lp := &LoggingParams{}
+	ctx = NewContextWithLoggingParams(NewContextWithLogger(ctx, loggerForNext), lp)
+
+	err := handler(ctx)
+	duration := time.Since(startTime)
+
+	grpcCode := status.Code(err)
+	if !noLog || grpcCode != codes.OK { // Log if not excluded or if there's an error
+		if duration >= opts.slowCallThreshold {
+			lp.fields = append(
+				lp.fields,
+				log.Bool("slow_request", true),
+				log.Object("time_slots", lp.getTimeSlots()),
+			)
+		}
+		logFields = append(
+			logFields,
+			log.String("grpc_code", grpcCode.String()),
+			log.Int64("duration_ms", duration.Milliseconds()),
+		)
+		if err != nil {
+			logFields = append(logFields, log.String("grpc_error", err.Error()))
+		}
+		logger.Info(fmt.Sprintf("gRPC call finished in %.3fs", duration.Seconds()), append(logFields, lp.fields...)...)
+	}
+}
+
+// buildCallInfoLogFields builds the common log fields for both unary and stream interceptors
+func buildCallInfoLogFields(
+	ctx context.Context, fullMethod string, methodType CallMethodType, opts *loggingOptions,
+) []log.Field {
 	service, method := splitFullMethodName(fullMethod)
 	var remoteAddr string
 	var remoteAddrIP string
@@ -252,7 +251,7 @@ func buildCommonLogFields(ctx context.Context, fullMethod, methodType string, op
 		logFields,
 		log.String("grpc_service", service),
 		log.String("grpc_method", method),
-		log.String("grpc_method_type", methodType),
+		log.String("grpc_method_type", string(methodType)),
 		log.String("remote_addr", remoteAddr),
 		log.String("user_agent", userAgent),
 	)
@@ -276,39 +275,6 @@ func buildCommonLogFields(ctx context.Context, fullMethod, methodType string, op
 	}
 
 	return logFields
-}
-
-// logCallCompletion logs the completion of a gRPC call with timing and error information
-func logCallCompletion(
-	logger log.FieldLogger,
-	logFields []log.Field,
-	lp *LoggingParams,
-	duration time.Duration,
-	err error,
-	opts *loggingOptions,
-	fullMethod string,
-) {
-	grpcCode := status.Code(err)
-	noLog := isLoggingDisabled(fullMethod, opts.excludedMethods)
-
-	if !noLog || grpcCode != codes.OK { // Log if not excluded or if there's an error
-		if duration >= opts.slowCallThreshold {
-			lp.fields = append(
-				lp.fields,
-				log.Bool("slow_request", true),
-				log.Object("time_slots", lp.getTimeSlots()),
-			)
-		}
-		logFields = append(
-			logFields,
-			log.String("grpc_code", grpcCode.String()),
-			log.Int64("duration_ms", duration.Milliseconds()),
-		)
-		if err != nil {
-			logFields = append(logFields, log.String("grpc_error", err.Error()))
-		}
-		logger.Info(fmt.Sprintf("gRPC call finished in %.3fs", duration.Seconds()), append(logFields, lp.fields...)...)
-	}
 }
 
 func splitFullMethodName(fullMethod string) (string, string) {
