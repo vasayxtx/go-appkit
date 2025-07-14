@@ -544,3 +544,215 @@ func getLogFieldAsString(logEntry logtest.RecordedEntry, key string) string {
 	}
 	return string(logField.Bytes)
 }
+
+func TestLoggingServerStreamInterceptor(t *testing.T) {
+	const headerRequestID = "test-request-id"
+	const headerUserAgent = "test-user-agent"
+
+	logger := logtest.NewRecorder()
+
+	svc, client, closeSvc, err := startTestService(
+		[]grpc.ServerOption{grpc.ChainStreamInterceptor(RequestIDServerStreamInterceptor(), LoggingServerStreamInterceptor(logger))},
+		[]grpc.DialOption{grpc.WithUserAgent(headerUserAgent)})
+	require.NoError(t, err)
+	defer func() { require.NoError(t, closeSvc()) }()
+
+	requireCommonFields := func(t *testing.T, logEntry logtest.RecordedEntry) {
+		requireLogFieldString(t, logEntry, "request_id", headerRequestID)
+		require.NotEmpty(t, getLogFieldAsString(logEntry, "int_request_id"))
+		requireLogFieldString(t, logEntry, "grpc_service", "grpc.testing.TestService")
+		requireLogFieldString(t, logEntry, "grpc_method", "StreamingOutputCall")
+		requireLogFieldString(t, logEntry, "grpc_method_type", methodTypeStream)
+		require.True(t, strings.HasPrefix(getLogFieldAsString(logEntry, "remote_addr"), "127.0.0.1:"))
+		requireLogFieldString(t, logEntry, "user_agent", headerUserAgent+" grpc-go/"+grpc.Version)
+	}
+
+	permissionDeniedErr := status.Error(codes.PermissionDenied, "Permission denied")
+
+	tests := []struct {
+		name                       string
+		md                         metadata.MD
+		streamingOutputCallHandler func(req *grpc_testing.StreamingOutputCallRequest, stream grpc_testing.TestService_StreamingOutputCallServer) error
+		wantErr                    error
+		wantCode                   codes.Code
+	}{
+		{
+			name:     "log gRPC stream call is started and finished",
+			md:       metadata.Pairs(headerRequestIDKey, headerRequestID),
+			wantCode: codes.OK,
+		},
+		{
+			name: "log gRPC stream call is started and finished with error",
+			md:   metadata.Pairs(headerRequestIDKey, headerRequestID),
+			streamingOutputCallHandler: func(req *grpc_testing.StreamingOutputCallRequest, stream grpc_testing.TestService_StreamingOutputCallServer) error {
+				return permissionDeniedErr
+			},
+			wantErr:  permissionDeniedErr,
+			wantCode: codes.PermissionDenied,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.streamingOutputCallHandler != nil {
+				svc.SwitchStreamingOutputCallHandler(tt.streamingOutputCallHandler)
+			}
+
+			reqCtx := metadata.NewOutgoingContext(context.Background(), tt.md)
+			stream, streamErr := client.StreamingOutputCall(reqCtx, &grpc_testing.StreamingOutputCallRequest{})
+			require.NoError(t, streamErr)
+
+			// Receive one message to trigger the interceptor
+			_, recvErr := stream.Recv()
+			if tt.wantErr != nil {
+				require.ErrorIs(t, recvErr, tt.wantErr)
+			} else {
+				require.NoError(t, recvErr)
+			}
+
+			require.Equal(t, 1, len(logger.Entries()))
+
+			callFinishedLogEntry := logger.Entries()[0]
+			require.Contains(t, callFinishedLogEntry.Text, "gRPC call finished")
+			require.Equal(t, log.LevelInfo, callFinishedLogEntry.Level)
+			requireCommonFields(t, callFinishedLogEntry)
+
+			requireLogFieldString(t, callFinishedLogEntry, "grpc_code", tt.wantCode.String())
+			_, found := callFinishedLogEntry.FindField("duration_ms")
+			require.True(t, found)
+
+			if tt.wantErr != nil {
+				requireLogFieldString(t, callFinishedLogEntry, "grpc_error", tt.wantErr.Error())
+			}
+
+			logger.Reset()
+			svc.Reset()
+		})
+	}
+}
+
+func TestLoggingServerStreamInterceptorWithOptions(t *testing.T) {
+	const headerRequestID = "test-request-id"
+	const headerUserAgent = "test-user-agent"
+
+	logger := logtest.NewRecorder()
+
+	// Test with request start enabled
+	_, client, closeSvc, err := startTestService(
+		[]grpc.ServerOption{grpc.ChainStreamInterceptor(
+			RequestIDServerStreamInterceptor(),
+			LoggingServerStreamInterceptor(logger, WithLoggingCallStart(true)),
+		)},
+		[]grpc.DialOption{grpc.WithUserAgent(headerUserAgent)})
+	require.NoError(t, err)
+	defer func() { require.NoError(t, closeSvc()) }()
+
+	reqCtx := metadata.NewOutgoingContext(context.Background(), metadata.Pairs(headerRequestIDKey, headerRequestID))
+	stream, streamErr := client.StreamingOutputCall(reqCtx, &grpc_testing.StreamingOutputCallRequest{})
+	require.NoError(t, streamErr)
+
+	// Receive one message to trigger the interceptor
+	_, recvErr := stream.Recv()
+	require.NoError(t, recvErr)
+
+	// Should have 2 entries: started and finished
+	require.Equal(t, 2, len(logger.Entries()))
+	require.Contains(t, logger.Entries()[0].Text, "gRPC call started")
+	require.Contains(t, logger.Entries()[1].Text, "gRPC call finished")
+}
+
+func TestLoggingServerStreamInterceptor_ExcludedMethods(t *testing.T) {
+	const headerRequestID = "test-request-id"
+
+	logger := logtest.NewRecorder()
+
+	_, client, closeSvc, err := startTestService(
+		[]grpc.ServerOption{grpc.ChainStreamInterceptor(
+			RequestIDServerStreamInterceptor(),
+			LoggingServerStreamInterceptor(logger,
+				WithLoggingExcludedMethods("/grpc.testing.TestService/StreamingOutputCall"),
+			),
+		)},
+		nil)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, closeSvc()) }()
+
+	reqCtx := metadata.NewOutgoingContext(context.Background(), metadata.Pairs(headerRequestIDKey, headerRequestID))
+	stream, streamErr := client.StreamingOutputCall(reqCtx, &grpc_testing.StreamingOutputCallRequest{})
+	require.NoError(t, streamErr)
+
+	// Receive one message to trigger the interceptor
+	_, recvErr := stream.Recv()
+	require.NoError(t, recvErr)
+
+	// Should have no log entries for excluded method
+	require.Equal(t, 0, len(logger.Entries()))
+}
+
+func TestLoggingServerStreamInterceptor_SlowRequests(t *testing.T) {
+	const headerRequestID = "test-request-id"
+
+	logger := logtest.NewRecorder()
+
+	_, client, closeSvc, err := startTestService(
+		[]grpc.ServerOption{grpc.ChainStreamInterceptor(
+			RequestIDServerStreamInterceptor(),
+			LoggingServerStreamInterceptor(logger,
+				WithLoggingSlowCallThreshold(1*time.Nanosecond), // Very low threshold to trigger slow request
+			),
+		)},
+		nil)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, closeSvc()) }()
+
+	reqCtx := metadata.NewOutgoingContext(context.Background(), metadata.Pairs(headerRequestIDKey, headerRequestID))
+	stream, streamErr := client.StreamingOutputCall(reqCtx, &grpc_testing.StreamingOutputCallRequest{})
+	require.NoError(t, streamErr)
+
+	// Receive one message to trigger the interceptor
+	_, recvErr := stream.Recv()
+	require.NoError(t, recvErr)
+
+	require.Equal(t, 1, len(logger.Entries()))
+	logEntry := logger.Entries()[0]
+
+	// Should have slow_request field set to true
+	field, found := logEntry.FindField("slow_request")
+	require.True(t, found)
+	require.True(t, field.Int != 0)
+}
+
+func TestLoggingServerStreamInterceptor_CustomStreamLoggerProvider(t *testing.T) {
+	const headerRequestID = "test-request-id"
+
+	baseLogger := logtest.NewRecorder()
+	customLogger := logtest.NewRecorder()
+
+	customProvider := func(ctx context.Context, info *grpc.StreamServerInfo) log.FieldLogger {
+		if info.FullMethod == "/grpc.testing.TestService/StreamingOutputCall" {
+			return customLogger
+		}
+		return nil
+	}
+
+	_, client, closeSvc, err := startTestService(
+		[]grpc.ServerOption{grpc.ChainStreamInterceptor(
+			RequestIDServerStreamInterceptor(),
+			LoggingServerStreamInterceptor(baseLogger, WithLoggingCustomStreamLoggerProvider(customProvider)),
+		)},
+		nil)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, closeSvc()) }()
+
+	reqCtx := metadata.NewOutgoingContext(context.Background(), metadata.Pairs(headerRequestIDKey, headerRequestID))
+	stream, streamErr := client.StreamingOutputCall(reqCtx, &grpc_testing.StreamingOutputCallRequest{})
+	require.NoError(t, streamErr)
+
+	// Receive one message to trigger the interceptor
+	_, recvErr := stream.Recv()
+	require.NoError(t, recvErr)
+
+	// Base logger should have no entries, custom logger should have 1
+	require.Equal(t, 0, len(baseLogger.Entries()))
+	require.Equal(t, 1, len(customLogger.Entries()))
+	require.Contains(t, customLogger.Entries()[0].Text, "gRPC call finished")
+}
