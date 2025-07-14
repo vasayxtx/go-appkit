@@ -293,9 +293,9 @@ func MetricsServerStreamInterceptor(
 
 		nextSrvStream := ss
 		if startTimeGenerated {
-			nextSrvStream = &wrappedServerStream{
+			nextSrvStream = &WrappedServerStream{
 				ServerStream: ss,
-				ctx:          ctx,
+				Ctx:          ctx,
 			}
 		}
 

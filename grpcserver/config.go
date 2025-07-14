@@ -28,22 +28,24 @@ const (
 	cfgKeyServerKeepaliveMinTime     = "keepalive.minTime"
 	cfgKeyServerMaxConnections       = "limits.maxConnections"
 	cfgKeyServerMaxConcurrentStreams = "limits.maxConcurrentStreams"
-	cfgKeyServerMaxMessageSize       = "limits.maxMessageSize"
+	cfgKeyServerMaxRecvMessageSize   = "limits.maxRecvMessageSize"
+	cfgKeyServerMaxSendMessageSize   = "limits.maxSendMessageSize"
 	cfgKeyServerLogCallStart         = "log.callStart"
 	cfgKeyServerLogExcludedMethods   = "log.excludedMethods"
 	cfgKeyServerLogSlowCallThreshold = "log.slowCallThreshold"
 )
 
 const (
-	defaultServerAddress           = ":9090"
-	defaultServerConnectionTimeout = time.Second * 30
-	defaultServerShutdownTimeout   = time.Second * 5
-	defaultServerKeepaliveTime     = time.Minute * 2
-	defaultServerKeepaliveTimeout  = time.Second * 20
-	defaultServerKeepaliveMinTime  = time.Second * 5
-	defaultServerMaxConnections    = 1000
-	defaultServerMaxMessageSize    = 1024 * 1024 * 4 // 4MB
-	defaultSlowCallThreshold       = time.Second
+	defaultServerAddress              = ":9090"
+	defaultServerConnectionTimeout    = time.Second * 30
+	defaultServerShutdownTimeout      = time.Second * 5
+	defaultServerKeepaliveTime        = time.Minute * 2
+	defaultServerKeepaliveTimeout     = time.Second * 20
+	defaultServerKeepaliveMinTime     = time.Second * 5
+	defaultServerMaxConnections       = 1000
+	defaultServerMaxRecvMessageSize   = 1024 * 1024 * 4 // 4MB
+	defaultServerMaxSendMessageSize   = 1024 * 1024 * 4 // 4MB
+	defaultSlowCallThreshold          = time.Second
 )
 
 // Config represents a set of configuration parameters for gRPC Server.
@@ -107,8 +109,9 @@ func NewDefaultConfig(options ...ConfigOption) *Config {
 			MinTime: config.TimeDuration(defaultServerKeepaliveMinTime),
 		},
 		Limits: LimitsConfig{
-			MaxConnections: defaultServerMaxConnections,
-			MaxMessageSize: config.ByteSize(defaultServerMaxMessageSize),
+			MaxConnections:     defaultServerMaxConnections,
+			MaxRecvMessageSize: config.ByteSize(defaultServerMaxRecvMessageSize),
+			MaxSendMessageSize: config.ByteSize(defaultServerMaxSendMessageSize),
 		},
 		Log: LogConfig{
 			SlowCallThreshold: config.TimeDuration(defaultSlowCallThreshold),
@@ -138,7 +141,8 @@ func (c *Config) SetProviderDefaults(dp config.DataProvider) {
 	dp.SetDefault(cfgKeyServerKeepaliveMinTime, defaultServerKeepaliveMinTime)
 
 	dp.SetDefault(cfgKeyServerMaxConnections, defaultServerMaxConnections)
-	dp.SetDefault(cfgKeyServerMaxMessageSize, defaultServerMaxMessageSize)
+	dp.SetDefault(cfgKeyServerMaxRecvMessageSize, defaultServerMaxRecvMessageSize)
+	dp.SetDefault(cfgKeyServerMaxSendMessageSize, defaultServerMaxSendMessageSize)
 
 	dp.SetDefault(cfgKeyServerLogCallStart, false)
 	dp.SetDefault(cfgKeyServerLogSlowCallThreshold, defaultSlowCallThreshold)
@@ -208,8 +212,11 @@ type LimitsConfig struct {
 	// MaxConcurrentStreams is the maximum number of concurrent streams per connection.
 	MaxConcurrentStreams uint32 `mapstructure:"maxConcurrentStreams" yaml:"maxConcurrentStreams" json:"maxConcurrentStreams"`
 
-	// MaxMessageSize is the maximum size of a message in bytes.
-	MaxMessageSize config.ByteSize `mapstructure:"maxMessageSize" yaml:"maxMessageSize" json:"maxMessageSize"`
+	// MaxRecvMessageSize is the maximum size of a received message in bytes.
+	MaxRecvMessageSize config.ByteSize `mapstructure:"maxRecvMessageSize" yaml:"maxRecvMessageSize" json:"maxRecvMessageSize"`
+
+	// MaxSendMessageSize is the maximum size of a sent message in bytes.
+	MaxSendMessageSize config.ByteSize `mapstructure:"maxSendMessageSize" yaml:"maxSendMessageSize" json:"maxSendMessageSize"`
 }
 
 // Set sets limit server configuration values from config.DataProvider.
@@ -236,8 +243,12 @@ func (l *LimitsConfig) Set(dp config.DataProvider) error {
 	}
 	l.MaxConcurrentStreams = uint32(maxConcurrentStreams)
 
-	if l.MaxMessageSize, err = dp.GetSizeInBytes(cfgKeyServerMaxMessageSize); err != nil {
-		return dp.WrapKeyErr(cfgKeyServerMaxMessageSize, err)
+	if l.MaxRecvMessageSize, err = dp.GetSizeInBytes(cfgKeyServerMaxRecvMessageSize); err != nil {
+		return dp.WrapKeyErr(cfgKeyServerMaxRecvMessageSize, err)
+	}
+
+	if l.MaxSendMessageSize, err = dp.GetSizeInBytes(cfgKeyServerMaxSendMessageSize); err != nil {
+		return dp.WrapKeyErr(cfgKeyServerMaxSendMessageSize, err)
 	}
 
 	return nil

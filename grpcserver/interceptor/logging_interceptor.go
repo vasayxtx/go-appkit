@@ -153,7 +153,7 @@ func LoggingServerStreamInterceptor(logger log.FieldLogger, options ...LoggingOp
 		var err error
 		loggingServerInterceptor(ss.Context(), CallMethodTypeStream, loggerProvider, info.FullMethod, opts,
 			func(ctx context.Context) error {
-				wrappedStream := &wrappedServerStream{ServerStream: ss, ctx: ctx}
+				wrappedStream := &WrappedServerStream{ServerStream: ss, Ctx: ctx}
 				err = handler(srv, wrappedStream)
 				return err
 			})

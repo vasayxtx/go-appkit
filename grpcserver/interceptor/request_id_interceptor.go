@@ -131,7 +131,7 @@ func RequestIDServerStreamInterceptor(options ...RequestIDOption) func(
 		ctx := NewContextWithRequestID(ss.Context(), requestID)
 		ctx = NewContextWithInternalRequestID(ctx, internalRequestID)
 
-		wrappedStream := &wrappedServerStream{ServerStream: ss, ctx: ctx}
+		wrappedStream := &WrappedServerStream{ServerStream: ss, Ctx: ctx}
 		return handler(srv, wrappedStream)
 	}
 }

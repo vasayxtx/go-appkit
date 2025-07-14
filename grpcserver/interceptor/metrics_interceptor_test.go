@@ -13,6 +13,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/stretchr/testify/suite"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/interop/grpc_testing"
@@ -21,197 +22,204 @@ import (
 	"github.com/acronis/go-appkit/testutil"
 )
 
+// MetricsInterceptorTestSuite is a test suite for Metrics interceptors
+type MetricsInterceptorTestSuite struct {
+	suite.Suite
+	IsUnary bool
+}
+
 func TestMetricsServerUnaryInterceptor(t *testing.T) {
-	t.Run("test histogram of the gRPC calls", func(t *testing.T) {
-		const okCalls = 10
-		const permissionDeniedCalls = 5
+	suite.Run(t, &MetricsInterceptorTestSuite{IsUnary: true})
+}
 
-		promMetrics := NewPrometheusMetrics()
+func TestMetricsServerStreamInterceptor(t *testing.T) {
+	suite.Run(t, &MetricsInterceptorTestSuite{IsUnary: false})
+}
 
-		svc, client, closeSvc, err := startTestService(
-			[]grpc.ServerOption{grpc.UnaryInterceptor(MetricsServerUnaryInterceptor(promMetrics))}, nil)
-		require.NoError(t, err)
-		defer func() { require.NoError(t, closeSvc()) }()
+func (s *MetricsInterceptorTestSuite) TestMetricsServerInterceptorHistogram() {
+	const okCalls = 10
+	const permissionDeniedCalls = 5
 
-		getHist := func(code codes.Code) prometheus.Histogram {
-			return promMetrics.Durations.WithLabelValues(
-				"grpc.testing.TestService", "UnaryCall", string(CallMethodTypeUnary), code.String()).(prometheus.Histogram)
-		}
+	promMetrics := NewPrometheusMetrics()
 
-		testutil.RequireSamplesCountInHistogram(t, getHist(codes.OK), 0)
-		testutil.RequireSamplesCountInHistogram(t, getHist(codes.PermissionDenied), 0)
+	svc, client, closeSvc, err := s.createTestService(promMetrics)
+	s.Require().NoError(err)
+	defer func() { s.Require().NoError(closeSvc()) }()
 
-		for i := 0; i < okCalls; i++ {
-			_, err = client.UnaryCall(context.Background(), &grpc_testing.SimpleRequest{})
-			require.NoError(t, err)
-		}
-		testutil.RequireSamplesCountInHistogram(t, getHist(codes.OK), okCalls)
-		testutil.RequireSamplesCountInHistogram(t, getHist(codes.PermissionDenied), 0)
+	getHist := func(code codes.Code) prometheus.Histogram {
+		methodName, methodType := s.getMethodNameAndType()
+		return promMetrics.Durations.WithLabelValues(
+			"grpc.testing.TestService", methodName, string(methodType), code.String()).(prometheus.Histogram)
+	}
 
-		permissionDeniedErr := status.Error(codes.PermissionDenied, "Permission denied")
+	testutil.RequireSamplesCountInHistogram(s.T(), getHist(codes.OK), 0)
+	testutil.RequireSamplesCountInHistogram(s.T(), getHist(codes.PermissionDenied), 0)
+
+	for i := 0; i < okCalls; i++ {
+		err = s.makeCall(client)
+		s.Require().NoError(err)
+	}
+	testutil.RequireSamplesCountInHistogram(s.T(), getHist(codes.OK), okCalls)
+	testutil.RequireSamplesCountInHistogram(s.T(), getHist(codes.PermissionDenied), 0)
+
+	permissionDeniedErr := status.Error(codes.PermissionDenied, "Permission denied")
+	s.switchHandler(svc, permissionDeniedErr)
+	for i := 0; i < permissionDeniedCalls; i++ {
+		err = s.makeCall(client)
+		s.Require().ErrorIs(err, permissionDeniedErr)
+	}
+	testutil.RequireSamplesCountInHistogram(s.T(), getHist(codes.OK), okCalls)
+	testutil.RequireSamplesCountInHistogram(s.T(), getHist(codes.PermissionDenied), permissionDeniedCalls)
+}
+
+func (s *MetricsInterceptorTestSuite) TestMetricsServerInterceptorInFlight() {
+	promMetrics := NewPrometheusMetrics()
+
+	svc, client, closeSvc, err := s.createTestService(promMetrics)
+	s.Require().NoError(err)
+	defer func() { s.Require().NoError(closeSvc()) }()
+
+	methodName, methodType := s.getMethodNameAndType()
+	gauge := promMetrics.InFlight.WithLabelValues(
+		"grpc.testing.TestService", methodName, string(methodType))
+
+	requireSamplesCountInGauge(s.T(), gauge, 0)
+
+	called, done := make(chan struct{}), make(chan struct{})
+	s.switchHandlerWithChannels(svc, called, done)
+
+	callErr := make(chan error)
+	go func() {
+		callErr <- s.makeCall(client)
+	}()
+
+	<-called
+	requireSamplesCountInGauge(s.T(), gauge, 1)
+	close(done)
+	s.Require().NoError(<-callErr)
+	requireSamplesCountInGauge(s.T(), gauge, 0)
+}
+
+func (s *MetricsInterceptorTestSuite) TestMetricsServerInterceptorExcludedMethods() {
+	promMetrics := NewPrometheusMetrics()
+
+	methodName, methodType := s.getMethodNameAndType()
+	fullMethodName := "/grpc.testing.TestService/" + methodName
+
+	_, client, closeSvc, err := s.createTestServiceWithOptions(promMetrics, WithMetricsExcludedMethods(fullMethodName))
+	s.Require().NoError(err)
+	defer func() { s.Require().NoError(closeSvc()) }()
+
+	getHist := func(code codes.Code) prometheus.Histogram {
+		return promMetrics.Durations.WithLabelValues(
+			"grpc.testing.TestService", methodName, string(methodType), code.String()).(prometheus.Histogram)
+	}
+
+	err = s.makeCall(client)
+	s.Require().NoError(err)
+
+	testutil.RequireSamplesCountInHistogram(s.T(), getHist(codes.OK), 0)
+}
+
+func (s *MetricsInterceptorTestSuite) TestMetricsServerInterceptorMultipleExcludedMethods() {
+	promMetrics := NewPrometheusMetrics()
+
+	methodName, methodType := s.getMethodNameAndType()
+	fullMethodName := "/grpc.testing.TestService/" + methodName
+
+	_, client, closeSvc, err := s.createTestServiceWithOptions(promMetrics, WithMetricsExcludedMethods(fullMethodName, "/grpc.testing.TestService/OtherCall"))
+	s.Require().NoError(err)
+	defer func() { s.Require().NoError(closeSvc()) }()
+
+	getHist := func(code codes.Code) prometheus.Histogram {
+		return promMetrics.Durations.WithLabelValues(
+			"grpc.testing.TestService", methodName, string(methodType), code.String()).(prometheus.Histogram)
+	}
+
+	err = s.makeCall(client)
+	s.Require().NoError(err)
+
+	testutil.RequireSamplesCountInHistogram(s.T(), getHist(codes.OK), 0)
+}
+
+func (s *MetricsInterceptorTestSuite) TestMetricsServerInterceptorVariadicOptions() {
+	promMetrics := NewPrometheusMetrics()
+
+	_, client, closeSvc, err := s.createTestServiceWithOptions(promMetrics,
+		WithMetricsExcludedMethods("/grpc.testing.TestService/ExcludedMethod"),
+		WithMetricsExcludedMethods("/grpc.testing.TestService/AnotherExcludedMethod"))
+	s.Require().NoError(err)
+	defer func() { s.Require().NoError(closeSvc()) }()
+
+	methodName, methodType := s.getMethodNameAndType()
+	getHist := func(code codes.Code) prometheus.Histogram {
+		return promMetrics.Durations.WithLabelValues(
+			"grpc.testing.TestService", methodName, string(methodType), code.String()).(prometheus.Histogram)
+	}
+
+	testutil.RequireSamplesCountInHistogram(s.T(), getHist(codes.OK), 0)
+
+	err = s.makeCall(client)
+	s.Require().NoError(err)
+
+	testutil.RequireSamplesCountInHistogram(s.T(), getHist(codes.OK), 1)
+}
+
+func (s *MetricsInterceptorTestSuite) createTestService(promMetrics *PrometheusMetrics) (*testService, grpc_testing.TestServiceClient, func() error, error) {
+	return s.createTestServiceWithOptions(promMetrics)
+}
+
+func (s *MetricsInterceptorTestSuite) createTestServiceWithOptions(promMetrics *PrometheusMetrics, options ...MetricsOption) (*testService, grpc_testing.TestServiceClient, func() error, error) {
+	var serverOptions []grpc.ServerOption
+	if s.IsUnary {
+		serverOptions = []grpc.ServerOption{grpc.UnaryInterceptor(MetricsServerUnaryInterceptor(promMetrics, options...))}
+	} else {
+		serverOptions = []grpc.ServerOption{grpc.StreamInterceptor(MetricsServerStreamInterceptor(promMetrics, options...))}
+	}
+	return startTestService(serverOptions, nil)
+}
+
+func (s *MetricsInterceptorTestSuite) getMethodNameAndType() (string, CallMethodType) {
+	if s.IsUnary {
+		return "UnaryCall", CallMethodTypeUnary
+	}
+	return "StreamingOutputCall", CallMethodTypeStream
+}
+
+func (s *MetricsInterceptorTestSuite) makeCall(client grpc_testing.TestServiceClient) error {
+	if s.IsUnary {
+		_, err := client.UnaryCall(context.Background(), &grpc_testing.SimpleRequest{})
+		return err
+	}
+
+	stream, err := client.StreamingOutputCall(context.Background(), &grpc_testing.StreamingOutputCallRequest{})
+	if err != nil {
+		return err
+	}
+	_, err = stream.Recv()
+	return err
+}
+
+func (s *MetricsInterceptorTestSuite) switchHandler(svc *testService, returnErr error) {
+	if s.IsUnary {
 		svc.SwitchUnaryCallHandler(func(ctx context.Context, req *grpc_testing.SimpleRequest) (*grpc_testing.SimpleResponse, error) {
-			return nil, permissionDeniedErr
+			return nil, returnErr
 		})
-		for i := 0; i < permissionDeniedCalls; i++ {
-			_, err = client.UnaryCall(context.Background(), &grpc_testing.SimpleRequest{})
-			require.ErrorIs(t, err, permissionDeniedErr)
-		}
-		testutil.RequireSamplesCountInHistogram(t, getHist(codes.OK), okCalls)
-		testutil.RequireSamplesCountInHistogram(t, getHist(codes.PermissionDenied), permissionDeniedCalls)
-	})
+	} else {
+		svc.SwitchStreamingOutputCallHandler(func(req *grpc_testing.StreamingOutputCallRequest, stream grpc_testing.TestService_StreamingOutputCallServer) error {
+			return returnErr
+		})
+	}
+}
 
-	t.Run("test in-flight gRPC calls", func(t *testing.T) {
-		promMetrics := NewPrometheusMetrics()
-
-		svc, client, closeSvc, err := startTestService(
-			[]grpc.ServerOption{grpc.UnaryInterceptor(MetricsServerUnaryInterceptor(promMetrics))}, nil)
-		require.NoError(t, err)
-		defer func() { require.NoError(t, closeSvc()) }()
-
-		gauge := promMetrics.InFlight.WithLabelValues(
-			"grpc.testing.TestService", "UnaryCall", string(CallMethodTypeUnary))
-
-		requireSamplesCountInGauge(t, gauge, 0)
-
-		called, done := make(chan struct{}), make(chan struct{})
+func (s *MetricsInterceptorTestSuite) switchHandlerWithChannels(svc *testService, called, done chan struct{}) {
+	if s.IsUnary {
 		svc.SwitchUnaryCallHandler(func(ctx context.Context, req *grpc_testing.SimpleRequest) (*grpc_testing.SimpleResponse, error) {
 			close(called)
 			<-done
 			return &grpc_testing.SimpleResponse{}, nil
 		})
-
-		callErr := make(chan error)
-		go func() {
-			_, err = client.UnaryCall(context.Background(), &grpc_testing.SimpleRequest{})
-			callErr <- err
-		}()
-
-		<-called
-		requireSamplesCountInGauge(t, gauge, 1)
-		close(done)
-		require.NoError(t, <-callErr)
-		requireSamplesCountInGauge(t, gauge, 0)
-	})
-
-	t.Run("test excluded methods", func(t *testing.T) {
-		promMetrics := NewPrometheusMetrics()
-
-		_, client, closeSvc, err := startTestService(
-			[]grpc.ServerOption{grpc.UnaryInterceptor(MetricsServerUnaryInterceptor(promMetrics, WithMetricsExcludedMethods("/grpc.testing.TestService/UnaryCall")))}, nil)
-		require.NoError(t, err)
-		defer func() { require.NoError(t, closeSvc()) }()
-
-		getHist := func(code codes.Code) prometheus.Histogram {
-			return promMetrics.Durations.WithLabelValues(
-				"grpc.testing.TestService", "UnaryCall", string(CallMethodTypeUnary), code.String()).(prometheus.Histogram)
-		}
-
-		_, err = client.UnaryCall(context.Background(), &grpc_testing.SimpleRequest{})
-		require.NoError(t, err)
-
-		testutil.RequireSamplesCountInHistogram(t, getHist(codes.OK), 0)
-	})
-
-	t.Run("test multiple excluded methods", func(t *testing.T) {
-		promMetrics := NewPrometheusMetrics()
-
-		_, client, closeSvc, err := startTestService(
-			[]grpc.ServerOption{grpc.UnaryInterceptor(MetricsServerUnaryInterceptor(promMetrics, WithMetricsExcludedMethods("/grpc.testing.TestService/UnaryCall", "/grpc.testing.TestService/OtherCall")))}, nil)
-		require.NoError(t, err)
-		defer func() { require.NoError(t, closeSvc()) }()
-
-		getHist := func(code codes.Code) prometheus.Histogram {
-			return promMetrics.Durations.WithLabelValues(
-				"grpc.testing.TestService", "UnaryCall", string(CallMethodTypeUnary), code.String()).(prometheus.Histogram)
-		}
-
-		_, err = client.UnaryCall(context.Background(), &grpc_testing.SimpleRequest{})
-		require.NoError(t, err)
-
-		testutil.RequireSamplesCountInHistogram(t, getHist(codes.OK), 0)
-	})
-
-	t.Run("test variadic options pattern", func(t *testing.T) {
-		promMetrics := NewPrometheusMetrics()
-
-		_, client, closeSvc, err := startTestService(
-			[]grpc.ServerOption{grpc.UnaryInterceptor(MetricsServerUnaryInterceptor(promMetrics,
-				WithMetricsExcludedMethods("/grpc.testing.TestService/ExcludedMethod"),
-				WithMetricsExcludedMethods("/grpc.testing.TestService/AnotherExcludedMethod")))}, nil)
-		require.NoError(t, err)
-		defer func() { require.NoError(t, closeSvc()) }()
-
-		getHist := func(code codes.Code) prometheus.Histogram {
-			return promMetrics.Durations.WithLabelValues(
-				"grpc.testing.TestService", "UnaryCall", string(CallMethodTypeUnary), code.String()).(prometheus.Histogram)
-		}
-
-		testutil.RequireSamplesCountInHistogram(t, getHist(codes.OK), 0)
-
-		_, err = client.UnaryCall(context.Background(), &grpc_testing.SimpleRequest{})
-		require.NoError(t, err)
-
-		testutil.RequireSamplesCountInHistogram(t, getHist(codes.OK), 1)
-	})
-}
-
-func TestMetricsServerStreamInterceptor(t *testing.T) {
-	t.Run("test histogram of the gRPC stream calls", func(t *testing.T) {
-		const okCalls = 10
-		const permissionDeniedCalls = 5
-
-		promMetrics := NewPrometheusMetrics()
-
-		svc, client, closeSvc, err := startTestService(
-			[]grpc.ServerOption{grpc.StreamInterceptor(MetricsServerStreamInterceptor(promMetrics))}, nil)
-		require.NoError(t, err)
-		defer func() { require.NoError(t, closeSvc()) }()
-
-		getHist := func(code codes.Code) prometheus.Histogram {
-			return promMetrics.Durations.WithLabelValues(
-				"grpc.testing.TestService", "StreamingOutputCall", string(CallMethodTypeStream), code.String()).(prometheus.Histogram)
-		}
-
-		testutil.RequireSamplesCountInHistogram(t, getHist(codes.OK), 0)
-		testutil.RequireSamplesCountInHistogram(t, getHist(codes.PermissionDenied), 0)
-
-		for i := 0; i < okCalls; i++ {
-			stream, err := client.StreamingOutputCall(context.Background(), &grpc_testing.StreamingOutputCallRequest{})
-			require.NoError(t, err)
-			_, err = stream.Recv()
-			require.NoError(t, err)
-		}
-		testutil.RequireSamplesCountInHistogram(t, getHist(codes.OK), okCalls)
-		testutil.RequireSamplesCountInHistogram(t, getHist(codes.PermissionDenied), 0)
-
-		permissionDeniedErr := status.Error(codes.PermissionDenied, "Permission denied")
-		svc.SwitchStreamingOutputCallHandler(func(req *grpc_testing.StreamingOutputCallRequest, stream grpc_testing.TestService_StreamingOutputCallServer) error {
-			return permissionDeniedErr
-		})
-		for i := 0; i < permissionDeniedCalls; i++ {
-			stream, err := client.StreamingOutputCall(context.Background(), &grpc_testing.StreamingOutputCallRequest{})
-			require.NoError(t, err)
-			_, err = stream.Recv()
-			require.ErrorIs(t, err, permissionDeniedErr)
-		}
-		testutil.RequireSamplesCountInHistogram(t, getHist(codes.OK), okCalls)
-		testutil.RequireSamplesCountInHistogram(t, getHist(codes.PermissionDenied), permissionDeniedCalls)
-	})
-
-	t.Run("test in-flight gRPC stream calls", func(t *testing.T) {
-		promMetrics := NewPrometheusMetrics()
-
-		svc, client, closeSvc, err := startTestService(
-			[]grpc.ServerOption{grpc.StreamInterceptor(MetricsServerStreamInterceptor(promMetrics))}, nil)
-		require.NoError(t, err)
-		defer func() { require.NoError(t, closeSvc()) }()
-
-		gauge := promMetrics.InFlight.WithLabelValues(
-			"grpc.testing.TestService", "StreamingOutputCall", string(CallMethodTypeStream))
-
-		requireSamplesCountInGauge(t, gauge, 0)
-
-		called, done := make(chan struct{}), make(chan struct{})
+	} else {
 		svc.SwitchStreamingOutputCallHandler(func(req *grpc_testing.StreamingOutputCallRequest, stream grpc_testing.TestService_StreamingOutputCallServer) error {
 			close(called)
 			<-done
@@ -219,91 +227,7 @@ func TestMetricsServerStreamInterceptor(t *testing.T) {
 				Payload: &grpc_testing.Payload{Body: []byte("test-stream")},
 			})
 		})
-
-		callErr := make(chan error)
-		go func() {
-			stream, err := client.StreamingOutputCall(context.Background(), &grpc_testing.StreamingOutputCallRequest{})
-			if err != nil {
-				callErr <- err
-				return
-			}
-			_, err = stream.Recv()
-			callErr <- err
-		}()
-
-		<-called
-		requireSamplesCountInGauge(t, gauge, 1)
-		close(done)
-		require.NoError(t, <-callErr)
-		requireSamplesCountInGauge(t, gauge, 0)
-	})
-
-	t.Run("test excluded methods", func(t *testing.T) {
-		promMetrics := NewPrometheusMetrics()
-
-		_, client, closeSvc, err := startTestService(
-			[]grpc.ServerOption{grpc.StreamInterceptor(MetricsServerStreamInterceptor(promMetrics, WithMetricsExcludedMethods("/grpc.testing.TestService/StreamingOutputCall")))}, nil)
-		require.NoError(t, err)
-		defer func() { require.NoError(t, closeSvc()) }()
-
-		getHist := func(code codes.Code) prometheus.Histogram {
-			return promMetrics.Durations.WithLabelValues(
-				"grpc.testing.TestService", "StreamingOutputCall", string(CallMethodTypeStream), code.String()).(prometheus.Histogram)
-		}
-
-		stream, err := client.StreamingOutputCall(context.Background(), &grpc_testing.StreamingOutputCallRequest{})
-		require.NoError(t, err)
-		_, err = stream.Recv()
-		require.NoError(t, err)
-
-		testutil.RequireSamplesCountInHistogram(t, getHist(codes.OK), 0)
-	})
-
-	t.Run("test multiple excluded methods", func(t *testing.T) {
-		promMetrics := NewPrometheusMetrics()
-
-		_, client, closeSvc, err := startTestService(
-			[]grpc.ServerOption{grpc.StreamInterceptor(MetricsServerStreamInterceptor(promMetrics, WithMetricsExcludedMethods("/grpc.testing.TestService/StreamingOutputCall", "/grpc.testing.TestService/OtherCall")))}, nil)
-		require.NoError(t, err)
-		defer func() { require.NoError(t, closeSvc()) }()
-
-		getHist := func(code codes.Code) prometheus.Histogram {
-			return promMetrics.Durations.WithLabelValues(
-				"grpc.testing.TestService", "StreamingOutputCall", string(CallMethodTypeStream), code.String()).(prometheus.Histogram)
-		}
-
-		stream, err := client.StreamingOutputCall(context.Background(), &grpc_testing.StreamingOutputCallRequest{})
-		require.NoError(t, err)
-		_, err = stream.Recv()
-		require.NoError(t, err)
-
-		testutil.RequireSamplesCountInHistogram(t, getHist(codes.OK), 0)
-	})
-
-	t.Run("test variadic options pattern", func(t *testing.T) {
-		promMetrics := NewPrometheusMetrics()
-
-		_, client, closeSvc, err := startTestService(
-			[]grpc.ServerOption{grpc.StreamInterceptor(MetricsServerStreamInterceptor(promMetrics,
-				WithMetricsExcludedMethods("/grpc.testing.TestService/ExcludedMethod"),
-				WithMetricsExcludedMethods("/grpc.testing.TestService/AnotherExcludedMethod")))}, nil)
-		require.NoError(t, err)
-		defer func() { require.NoError(t, closeSvc()) }()
-
-		getHist := func(code codes.Code) prometheus.Histogram {
-			return promMetrics.Durations.WithLabelValues(
-				"grpc.testing.TestService", "StreamingOutputCall", string(CallMethodTypeStream), code.String()).(prometheus.Histogram)
-		}
-
-		testutil.RequireSamplesCountInHistogram(t, getHist(codes.OK), 0)
-
-		stream, err := client.StreamingOutputCall(context.Background(), &grpc_testing.StreamingOutputCallRequest{})
-		require.NoError(t, err)
-		_, err = stream.Recv()
-		require.NoError(t, err)
-
-		testutil.RequireSamplesCountInHistogram(t, getHist(codes.OK), 1)
-	})
+	}
 }
 
 func TestNewPrometheusMetrics(t *testing.T) {

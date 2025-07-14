@@ -134,8 +134,13 @@ func TestNew(t *testing.T) {
 		customUnaryInterceptor := func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
 			return handler(ctx, req)
 		}
+		customStreamInterceptor := func(srv interface{}, stream grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
+			return handler(srv, stream)
+		}
 
-		server, err := New(cfg, logger, WithUnaryInterceptors(customUnaryInterceptor))
+		server, err := New(cfg, logger,
+			WithUnaryInterceptors(customUnaryInterceptor),
+			WithStreamInterceptors(customStreamInterceptor))
 		require.NoError(t, err)
 		require.NotNil(t, server)
 	})

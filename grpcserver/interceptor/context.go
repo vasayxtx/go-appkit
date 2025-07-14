@@ -102,13 +102,13 @@ func getStringFromContext(ctx context.Context, key ctxKey) string {
 	return value.(string)
 }
 
-// wrappedServerStream wraps grpc.ServerStream to provide a custom context for the stream.
-type wrappedServerStream struct {
+// WrappedServerStream wraps grpc.ServerStream to provide a custom context for the stream.
+type WrappedServerStream struct {
 	grpc.ServerStream
-	ctx context.Context
+	Ctx context.Context
 }
 
 // Context returns the custom context for the wrapped server stream.
-func (s *wrappedServerStream) Context() context.Context {
-	return s.ctx
+func (ss *WrappedServerStream) Context() context.Context {
+	return ss.Ctx
 }

@@ -119,10 +119,13 @@ func New(cfg *Config, logger log.FieldLogger, options ...Option) (*GRPCServer, e
 	if cfg.Limits.MaxConcurrentStreams > 0 {
 		serverOpts = append(serverOpts, grpc.MaxConcurrentStreams(cfg.Limits.MaxConcurrentStreams))
 	}
-	if cfg.Limits.MaxMessageSize > 0 {
-		maxMsgSize := int(cfg.Limits.MaxMessageSize)
-		serverOpts = append(serverOpts, grpc.MaxRecvMsgSize(maxMsgSize))
-		serverOpts = append(serverOpts, grpc.MaxSendMsgSize(maxMsgSize))
+	if cfg.Limits.MaxRecvMessageSize > 0 {
+		maxRecvMsgSize := int(cfg.Limits.MaxRecvMessageSize)
+		serverOpts = append(serverOpts, grpc.MaxRecvMsgSize(maxRecvMsgSize))
+	}
+	if cfg.Limits.MaxSendMessageSize > 0 {
+		maxSendMsgSize := int(cfg.Limits.MaxSendMessageSize)
+		serverOpts = append(serverOpts, grpc.MaxSendMsgSize(maxSendMsgSize))
 	}
 
 	promMetrics := interceptor.NewPrometheusMetrics(
@@ -136,22 +139,30 @@ func New(cfg *Config, logger log.FieldLogger, options ...Option) (*GRPCServer, e
 		interceptor.WithLoggingExcludedMethods(cfg.Log.ExcludedMethods...),
 	}
 
-	// Build interceptor chain
+	// Build unary interceptors chain
 	unaryInterceptors := []grpc.UnaryServerInterceptor{
-		callStartTimeServerUnaryInterceptor(),
+		callStartTimeUnaryInterceptor(),
 		interceptor.RequestIDServerUnaryInterceptor(),
 		interceptor.LoggingServerUnaryInterceptor(logger, loggingOptions...),
 		interceptor.RecoveryServerUnaryInterceptor(),
 		interceptor.MetricsServerUnaryInterceptor(promMetrics),
 	}
-
-	// Add interceptors to server options
 	unaryInterceptors = append(unaryInterceptors, opts.unaryInterceptors...)
 	if len(unaryInterceptors) > 0 {
 		serverOpts = append(serverOpts, grpc.ChainUnaryInterceptor(unaryInterceptors...))
 	}
+
+	// Build stream interceptors chain
+	streamInterceptors := []grpc.StreamServerInterceptor{
+		callStartTimeStreamInterceptor(),
+		interceptor.RequestIDServerStreamInterceptor(),
+		interceptor.LoggingServerStreamInterceptor(logger, loggingOptions...),
+		interceptor.RecoveryServerStreamInterceptor(),
+		interceptor.MetricsServerStreamInterceptor(promMetrics),
+	}
+	streamInterceptors = append(streamInterceptors, opts.streamInterceptors...)
 	if len(opts.streamInterceptors) > 0 {
-		serverOpts = append(serverOpts, grpc.ChainStreamInterceptor(opts.streamInterceptors...))
+		serverOpts = append(serverOpts, grpc.ChainStreamInterceptor(streamInterceptors...))
 	}
 
 	grpcServer := &GRPCServer{
@@ -261,7 +272,7 @@ func (s *GRPCServer) Address() string {
 	return address
 }
 
-func callStartTimeServerUnaryInterceptor() func(
+func callStartTimeUnaryInterceptor() func(
 	ctx context.Context,
 	req interface{},
 	_ *grpc.UnaryServerInfo,
@@ -271,5 +282,22 @@ func callStartTimeServerUnaryInterceptor() func(
 		ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler,
 	) (resp interface{}, err error) {
 		return handler(interceptor.NewContextWithCallStartTime(ctx, time.Now()), req)
+	}
+}
+
+func callStartTimeStreamInterceptor() func(
+	srv interface{},
+	ss grpc.ServerStream,
+	_ *grpc.StreamServerInfo,
+	handler grpc.StreamHandler,
+) error {
+	return func(
+		srv interface{}, ss grpc.ServerStream, _ *grpc.StreamServerInfo, handler grpc.StreamHandler,
+	) error {
+		wrappedStream := &interceptor.WrappedServerStream{
+			ServerStream: ss,
+			Ctx:          interceptor.NewContextWithCallStartTime(ss.Context(), time.Now()),
+		}
+		return handler(srv, wrappedStream)
 	}
 }

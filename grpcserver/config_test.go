@@ -65,7 +65,8 @@ func TestNewDefaultConfig(t *testing.T) {
 	require.Equal(t, config.TimeDuration(defaultServerKeepaliveTimeout), cfg.Keepalive.Timeout)
 	require.Equal(t, config.TimeDuration(defaultServerKeepaliveMinTime), cfg.Keepalive.MinTime)
 	require.Equal(t, defaultServerMaxConnections, cfg.Limits.MaxConnections)
-	require.Equal(t, config.ByteSize(defaultServerMaxMessageSize), cfg.Limits.MaxMessageSize)
+	require.Equal(t, config.ByteSize(defaultServerMaxRecvMessageSize), cfg.Limits.MaxRecvMessageSize)
+	require.Equal(t, config.ByteSize(defaultServerMaxSendMessageSize), cfg.Limits.MaxSendMessageSize)
 	require.Equal(t, config.TimeDuration(defaultSlowCallThreshold), cfg.Log.SlowCallThreshold)
 }
 
@@ -109,7 +110,8 @@ func TestConfig_Set(t *testing.T) {
 				v.Set("grpcServer.keepalive.minTime", "10s")
 				v.Set("grpcServer.limits.maxConnections", 2000)
 				v.Set("grpcServer.limits.maxConcurrentStreams", 100)
-				v.Set("grpcServer.limits.maxMessageSize", "8MB")
+				v.Set("grpcServer.limits.maxRecvMessageSize", "8MB")
+				v.Set("grpcServer.limits.maxSendMessageSize", "8MB")
 				v.Set("grpcServer.log.callStart", true)
 				v.Set("grpcServer.log.excludedMethods", []string{"/grpc.health.v1.Health/Check"})
 				v.Set("grpcServer.log.slowCallThreshold", "2s")
@@ -135,7 +137,8 @@ func TestConfig_Set(t *testing.T) {
 					Limits: LimitsConfig{
 						MaxConnections:       2000,
 						MaxConcurrentStreams: 100,
-						MaxMessageSize:       config.ByteSize(8 * 1024 * 1024),
+						MaxRecvMessageSize:   config.ByteSize(8 * 1024 * 1024),
+						MaxSendMessageSize:   config.ByteSize(8 * 1024 * 1024),
 					},
 					Log: LogConfig{
 						CallStart:         true,
@@ -232,7 +235,8 @@ func TestLimitsConfig_Set(t *testing.T) {
 		va := config.NewViperAdapter()
 		va.Set("limits.maxConnections", 2000)
 		va.Set("limits.maxConcurrentStreams", 100)
-		va.Set("limits.maxMessageSize", "8MB")
+		va.Set("limits.maxRecvMessageSize", "8MB")
+		va.Set("limits.maxSendMessageSize", "6MB")
 
 		dp := config.NewKeyPrefixedDataProvider(va, "")
 		err := cfg.Set(dp)
@@ -240,7 +244,8 @@ func TestLimitsConfig_Set(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, 2000, cfg.MaxConnections)
 		require.Equal(t, uint32(100), cfg.MaxConcurrentStreams)
-		require.Equal(t, config.ByteSize(8*1024*1024), cfg.MaxMessageSize)
+		require.Equal(t, config.ByteSize(8*1024*1024), cfg.MaxRecvMessageSize)
+		require.Equal(t, config.ByteSize(6*1024*1024), cfg.MaxSendMessageSize)
 	})
 
 	t.Run("negative max connections", func(t *testing.T) {
@@ -271,7 +276,8 @@ func TestLimitsConfig_Set(t *testing.T) {
 		cfg := &LimitsConfig{}
 		va := config.NewViperAdapter()
 		va.Set("limits.maxConnections", 1000)
-		va.Set("limits.maxMessageSize", "4MB")
+		va.Set("limits.maxRecvMessageSize", "4MB")
+		va.Set("limits.maxSendMessageSize", "4MB")
 
 		dp := config.NewKeyPrefixedDataProvider(va, "")
 		err := cfg.Set(dp)
@@ -279,7 +285,8 @@ func TestLimitsConfig_Set(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, 1000, cfg.MaxConnections)
 		require.Equal(t, uint32(0), cfg.MaxConcurrentStreams)
-		require.Equal(t, config.ByteSize(4*1024*1024), cfg.MaxMessageSize)
+		require.Equal(t, config.ByteSize(4*1024*1024), cfg.MaxRecvMessageSize)
+		require.Equal(t, config.ByteSize(4*1024*1024), cfg.MaxSendMessageSize)
 	})
 }
 
