@@ -59,14 +59,9 @@ func TestNewDefaultConfig(t *testing.T) {
 
 	require.Equal(t, cfgDefaultKeyPrefix, cfg.KeyPrefix())
 	require.Equal(t, defaultServerAddress, cfg.Address)
-	require.Equal(t, config.TimeDuration(defaultServerConnectionTimeout), cfg.Timeouts.Connection)
 	require.Equal(t, config.TimeDuration(defaultServerShutdownTimeout), cfg.Timeouts.Shutdown)
 	require.Equal(t, config.TimeDuration(defaultServerKeepaliveTime), cfg.Keepalive.Time)
 	require.Equal(t, config.TimeDuration(defaultServerKeepaliveTimeout), cfg.Keepalive.Timeout)
-	require.Equal(t, config.TimeDuration(defaultServerKeepaliveMinTime), cfg.Keepalive.MinTime)
-	require.Equal(t, defaultServerMaxConnections, cfg.Limits.MaxConnections)
-	require.Equal(t, config.ByteSize(defaultServerMaxRecvMessageSize), cfg.Limits.MaxRecvMessageSize)
-	require.Equal(t, config.ByteSize(defaultServerMaxSendMessageSize), cfg.Limits.MaxSendMessageSize)
 	require.Equal(t, config.TimeDuration(defaultSlowCallThreshold), cfg.Log.SlowCallThreshold)
 }
 
@@ -84,7 +79,6 @@ func TestConfig_SetProviderDefaults(t *testing.T) {
 	require.NoError(t, err)
 
 	require.Equal(t, defaultServerAddress, testCfg.Address)
-	require.Equal(t, config.TimeDuration(defaultServerConnectionTimeout), testCfg.Timeouts.Connection)
 	require.Equal(t, config.TimeDuration(defaultServerShutdownTimeout), testCfg.Timeouts.Shutdown)
 }
 
@@ -103,12 +97,9 @@ func TestConfig_Set(t *testing.T) {
 				v.Set("grpcServer.tls.enabled", true)
 				v.Set("grpcServer.tls.cert", "/path/to/cert")
 				v.Set("grpcServer.tls.key", "/path/to/key")
-				v.Set("grpcServer.timeouts.connection", "45s")
 				v.Set("grpcServer.timeouts.shutdown", "10s")
 				v.Set("grpcServer.keepalive.time", "3m")
 				v.Set("grpcServer.keepalive.timeout", "30s")
-				v.Set("grpcServer.keepalive.minTime", "10s")
-				v.Set("grpcServer.limits.maxConnections", 2000)
 				v.Set("grpcServer.limits.maxConcurrentStreams", 100)
 				v.Set("grpcServer.limits.maxRecvMessageSize", "8MB")
 				v.Set("grpcServer.limits.maxSendMessageSize", "8MB")
@@ -126,16 +117,13 @@ func TestConfig_Set(t *testing.T) {
 						Key:         "/path/to/key",
 					},
 					Timeouts: TimeoutsConfig{
-						Connection: config.TimeDuration(45 * time.Second),
 						Shutdown:   config.TimeDuration(10 * time.Second),
 					},
 					Keepalive: KeepaliveConfig{
 						Time:    config.TimeDuration(3 * time.Minute),
 						Timeout: config.TimeDuration(30 * time.Second),
-						MinTime: config.TimeDuration(10 * time.Second),
 					},
 					Limits: LimitsConfig{
-						MaxConnections:       2000,
 						MaxConcurrentStreams: 100,
 						MaxRecvMessageSize:   config.ByteSize(8 * 1024 * 1024),
 						MaxSendMessageSize:   config.ByteSize(8 * 1024 * 1024),
@@ -147,13 +135,6 @@ func TestConfig_Set(t *testing.T) {
 					},
 				}
 			},
-		},
-		{
-			name: "negative max connections",
-			setupViper: func(v *viper.Viper) {
-				v.Set("grpcServer.limits.maxConnections", -1)
-			},
-			expectError: true,
 		},
 		{
 			name: "negative max concurrent streams",
@@ -199,14 +180,12 @@ func TestTimeoutsConfig_Set(t *testing.T) {
 	t.Run("valid timeouts", func(t *testing.T) {
 		cfg := &TimeoutsConfig{}
 		va := config.NewViperAdapter()
-		va.Set("timeouts.connection", "45s")
 		va.Set("timeouts.shutdown", "10s")
 
 		dp := config.NewKeyPrefixedDataProvider(va, "")
 		err := cfg.Set(dp)
 
 		require.NoError(t, err)
-		require.Equal(t, config.TimeDuration(45*time.Second), cfg.Connection)
 		require.Equal(t, config.TimeDuration(10*time.Second), cfg.Shutdown)
 	})
 }
@@ -217,7 +196,6 @@ func TestKeepaliveConfig_Set(t *testing.T) {
 		va := config.NewViperAdapter()
 		va.Set("keepalive.time", "3m")
 		va.Set("keepalive.timeout", "30s")
-		va.Set("keepalive.minTime", "10s")
 
 		dp := config.NewKeyPrefixedDataProvider(va, "")
 		err := cfg.Set(dp)
@@ -225,7 +203,6 @@ func TestKeepaliveConfig_Set(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, config.TimeDuration(3*time.Minute), cfg.Time)
 		require.Equal(t, config.TimeDuration(30*time.Second), cfg.Timeout)
-		require.Equal(t, config.TimeDuration(10*time.Second), cfg.MinTime)
 	})
 }
 
@@ -233,7 +210,6 @@ func TestLimitsConfig_Set(t *testing.T) {
 	t.Run("all values set", func(t *testing.T) {
 		cfg := &LimitsConfig{}
 		va := config.NewViperAdapter()
-		va.Set("limits.maxConnections", 2000)
 		va.Set("limits.maxConcurrentStreams", 100)
 		va.Set("limits.maxRecvMessageSize", "8MB")
 		va.Set("limits.maxSendMessageSize", "6MB")
@@ -242,25 +218,12 @@ func TestLimitsConfig_Set(t *testing.T) {
 		err := cfg.Set(dp)
 
 		require.NoError(t, err)
-		require.Equal(t, 2000, cfg.MaxConnections)
 		require.Equal(t, uint32(100), cfg.MaxConcurrentStreams)
 		require.Equal(t, config.ByteSize(8*1024*1024), cfg.MaxRecvMessageSize)
 		require.Equal(t, config.ByteSize(6*1024*1024), cfg.MaxSendMessageSize)
 	})
 
-	t.Run("negative max connections", func(t *testing.T) {
-		cfg := &LimitsConfig{}
-		va := config.NewViperAdapter()
-		va.Set("limits.maxConnections", -1)
-
-		dp := config.NewKeyPrefixedDataProvider(va, "")
-		err := cfg.Set(dp)
-
-		require.Error(t, err)
-		require.Contains(t, err.Error(), "cannot be negative")
-	})
-
-	t.Run("negative max concurrent streams", func(t *testing.T) {
+t.Run("negative max concurrent streams", func(t *testing.T) {
 		cfg := &LimitsConfig{}
 		va := config.NewViperAdapter()
 		va.Set("limits.maxConcurrentStreams", -1)
@@ -275,7 +238,6 @@ func TestLimitsConfig_Set(t *testing.T) {
 	t.Run("optional max concurrent streams not set", func(t *testing.T) {
 		cfg := &LimitsConfig{}
 		va := config.NewViperAdapter()
-		va.Set("limits.maxConnections", 1000)
 		va.Set("limits.maxRecvMessageSize", "4MB")
 		va.Set("limits.maxSendMessageSize", "4MB")
 
@@ -283,7 +245,6 @@ func TestLimitsConfig_Set(t *testing.T) {
 		err := cfg.Set(dp)
 
 		require.NoError(t, err)
-		require.Equal(t, 1000, cfg.MaxConnections)
 		require.Equal(t, uint32(0), cfg.MaxConcurrentStreams)
 		require.Equal(t, config.ByteSize(4*1024*1024), cfg.MaxRecvMessageSize)
 		require.Equal(t, config.ByteSize(4*1024*1024), cfg.MaxSendMessageSize)

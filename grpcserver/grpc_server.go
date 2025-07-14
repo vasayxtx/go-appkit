@@ -112,9 +112,6 @@ func New(cfg *Config, logger log.FieldLogger, options ...Option) (*GRPCServer, e
 		PermitWithoutStream: true,
 	}))
 
-	// Add connection timeout
-	serverOpts = append(serverOpts, grpc.ConnectionTimeout(time.Duration(cfg.Timeouts.Connection)))
-
 	// Add limits
 	if cfg.Limits.MaxConcurrentStreams > 0 {
 		serverOpts = append(serverOpts, grpc.MaxConcurrentStreams(cfg.Limits.MaxConcurrentStreams))

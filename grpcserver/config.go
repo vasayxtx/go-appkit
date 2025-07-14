@@ -21,12 +21,10 @@ const (
 	cfgKeyServerTLSCert              = "tls.cert"
 	cfgKeyServerTLSKey               = "tls.key"
 	cfgKeyServerTLSEnabled           = "tls.enabled"
-	cfgKeyServerConnectionTimeout    = "timeouts.connection"
 	cfgKeyServerShutdownTimeout      = "timeouts.shutdown"
 	cfgKeyServerKeepaliveTime        = "keepalive.time"
 	cfgKeyServerKeepaliveTimeout     = "keepalive.timeout"
 	cfgKeyServerKeepaliveMinTime     = "keepalive.minTime"
-	cfgKeyServerMaxConnections       = "limits.maxConnections"
 	cfgKeyServerMaxConcurrentStreams = "limits.maxConcurrentStreams"
 	cfgKeyServerMaxRecvMessageSize   = "limits.maxRecvMessageSize"
 	cfgKeyServerMaxSendMessageSize   = "limits.maxSendMessageSize"
@@ -36,16 +34,13 @@ const (
 )
 
 const (
-	defaultServerAddress              = ":9090"
-	defaultServerConnectionTimeout    = time.Second * 30
-	defaultServerShutdownTimeout      = time.Second * 5
-	defaultServerKeepaliveTime        = time.Minute * 2
-	defaultServerKeepaliveTimeout     = time.Second * 20
-	defaultServerKeepaliveMinTime     = time.Second * 5
-	defaultServerMaxConnections       = 1000
-	defaultServerMaxRecvMessageSize   = 1024 * 1024 * 4 // 4MB
-	defaultServerMaxSendMessageSize   = 1024 * 1024 * 4 // 4MB
-	defaultSlowCallThreshold          = time.Second
+	defaultServerAddress            = ":9090"
+	defaultServerShutdownTimeout    = time.Second * 5
+	defaultServerKeepaliveTime      = time.Minute * 2
+	defaultServerKeepaliveTimeout   = time.Second * 20
+	defaultServerMaxRecvMessageSize = 1024 * 1024 * 4 // 4MB
+	defaultServerMaxSendMessageSize = 1024 * 1024 * 4 // 4MB
+	defaultSlowCallThreshold        = time.Second
 )
 
 // Config represents a set of configuration parameters for gRPC Server.
@@ -100,16 +95,13 @@ func NewDefaultConfig(options ...ConfigOption) *Config {
 		keyPrefix: opts.keyPrefix,
 		Address:   defaultServerAddress,
 		Timeouts: TimeoutsConfig{
-			Connection: config.TimeDuration(defaultServerConnectionTimeout),
-			Shutdown:   config.TimeDuration(defaultServerShutdownTimeout),
+			Shutdown: config.TimeDuration(defaultServerShutdownTimeout),
 		},
 		Keepalive: KeepaliveConfig{
 			Time:    config.TimeDuration(defaultServerKeepaliveTime),
 			Timeout: config.TimeDuration(defaultServerKeepaliveTimeout),
-			MinTime: config.TimeDuration(defaultServerKeepaliveMinTime),
 		},
 		Limits: LimitsConfig{
-			MaxConnections:     defaultServerMaxConnections,
 			MaxRecvMessageSize: config.ByteSize(defaultServerMaxRecvMessageSize),
 			MaxSendMessageSize: config.ByteSize(defaultServerMaxSendMessageSize),
 		},
@@ -132,26 +124,18 @@ func (c *Config) KeyPrefix() string {
 // Implements config.Config interface.
 func (c *Config) SetProviderDefaults(dp config.DataProvider) {
 	dp.SetDefault(cfgKeyServerAddress, defaultServerAddress)
-
-	dp.SetDefault(cfgKeyServerConnectionTimeout, defaultServerConnectionTimeout)
 	dp.SetDefault(cfgKeyServerShutdownTimeout, defaultServerShutdownTimeout)
-
 	dp.SetDefault(cfgKeyServerKeepaliveTime, defaultServerKeepaliveTime)
 	dp.SetDefault(cfgKeyServerKeepaliveTimeout, defaultServerKeepaliveTimeout)
-	dp.SetDefault(cfgKeyServerKeepaliveMinTime, defaultServerKeepaliveMinTime)
-
-	dp.SetDefault(cfgKeyServerMaxConnections, defaultServerMaxConnections)
 	dp.SetDefault(cfgKeyServerMaxRecvMessageSize, defaultServerMaxRecvMessageSize)
 	dp.SetDefault(cfgKeyServerMaxSendMessageSize, defaultServerMaxSendMessageSize)
-
 	dp.SetDefault(cfgKeyServerLogCallStart, false)
 	dp.SetDefault(cfgKeyServerLogSlowCallThreshold, defaultSlowCallThreshold)
 }
 
 // TimeoutsConfig represents a set of configuration parameters for gRPC Server relating to timeouts.
 type TimeoutsConfig struct {
-	Connection config.TimeDuration `mapstructure:"connection" yaml:"connection" json:"connection"`
-	Shutdown   config.TimeDuration `mapstructure:"shutdown" yaml:"shutdown" json:"shutdown"`
+	Shutdown config.TimeDuration `mapstructure:"shutdown" yaml:"shutdown" json:"shutdown"`
 }
 
 // Set sets timeout server configuration values from config.DataProvider.
@@ -159,11 +143,6 @@ type TimeoutsConfig struct {
 func (t *TimeoutsConfig) Set(dp config.DataProvider) error {
 	var err error
 	var dur time.Duration
-
-	if dur, err = dp.GetDuration(cfgKeyServerConnectionTimeout); err != nil {
-		return err
-	}
-	t.Connection = config.TimeDuration(dur)
 
 	if dur, err = dp.GetDuration(cfgKeyServerShutdownTimeout); err != nil {
 		return err
@@ -206,9 +185,6 @@ func (k *KeepaliveConfig) Set(dp config.DataProvider) error {
 
 // LimitsConfig represents a set of configuration parameters for gRPC Server relating to limits.
 type LimitsConfig struct {
-	// MaxConnections is the maximum number of concurrent connections.
-	MaxConnections int `mapstructure:"maxConnections" yaml:"maxConnections" json:"maxConnections"`
-
 	// MaxConcurrentStreams is the maximum number of concurrent streams per connection.
 	MaxConcurrentStreams uint32 `mapstructure:"maxConcurrentStreams" yaml:"maxConcurrentStreams" json:"maxConcurrentStreams"`
 
@@ -222,13 +198,6 @@ type LimitsConfig struct {
 // Set sets limit server configuration values from config.DataProvider.
 func (l *LimitsConfig) Set(dp config.DataProvider) error {
 	var err error
-
-	if l.MaxConnections, err = dp.GetInt(cfgKeyServerMaxConnections); err != nil {
-		return err
-	}
-	if l.MaxConnections < 0 {
-		return dp.WrapKeyErr(cfgKeyServerMaxConnections, fmt.Errorf("cannot be negative"))
-	}
 
 	var maxConcurrentStreams int
 	if maxConcurrentStreams, err = dp.GetInt(cfgKeyServerMaxConcurrentStreams); err != nil {
