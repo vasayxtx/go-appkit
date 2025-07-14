@@ -25,7 +25,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/stretchr/testify/require"
+	"github.com/stretchr/testify/suite"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
@@ -34,353 +34,357 @@ import (
 	"github.com/acronis/go-appkit/log/logtest"
 )
 
-func TestNew(t *testing.T) {
-	logger := logtest.NewRecorder()
-
-	t.Run("basic server creation", func(t *testing.T) {
-		cfg := NewDefaultConfig()
-
-		server, err := New(cfg, logger)
-		require.NoError(t, err)
-		require.NotNil(t, server)
-		require.Equal(t, cfg.Address, server.Address())
-		require.NotNil(t, server.GRPCServer)
-		require.Equal(t, logger, server.Logger)
-	})
-
-	t.Run("server with TLS", func(t *testing.T) {
-		tmpDir := t.TempDir()
-		certFile := filepath.Join(tmpDir, "cert.pem")
-		keyFile := filepath.Join(tmpDir, "key.pem")
-
-		// Generate test certificates
-		require.NoError(t, generateTestCertificate(certFile, keyFile))
-
-		cfg := NewDefaultConfig()
-		cfg.Address = "localhost:0"
-		cfg.TLS.Enabled = true
-		cfg.TLS.Certificate = certFile
-		cfg.TLS.Key = keyFile
-
-		server, err := New(cfg, logger)
-		require.NoError(t, err)
-		require.NotNil(t, server)
-
-		// Register test service
-		grpc_testing.RegisterTestServiceServer(server.GRPCServer, &testGRPCService{})
-
-		// Start server
-		fatalErrorChan := make(chan error, 1)
-		var wg sync.WaitGroup
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			server.Start(fatalErrorChan)
-		}()
-
-		// Wait for server to start
-		time.Sleep(100 * time.Millisecond)
-
-		// Create TLS credentials for client using the generated certificate
-		creds, err := buildGRPCTLSCredentials(certFile)
-		require.NoError(t, err)
-
-		// Test connection with TLS
-		conn, err := grpc.NewClient(server.Address(), grpc.WithTransportCredentials(creds))
-		require.NoError(t, err)
-		defer conn.Close()
-
-		// Create client and make a call
-		client := grpc_testing.NewTestServiceClient(conn)
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-		defer cancel()
-
-		resp, err := client.UnaryCall(ctx, &grpc_testing.SimpleRequest{
-			Payload: &grpc_testing.Payload{Body: []byte("tls-test")},
-		})
-		require.NoError(t, err)
-		require.NotNil(t, resp)
-		require.Equal(t, "tls-test", string(resp.Payload.Body))
-
-		// Stop server
-		err = server.Stop(true)
-		require.NoError(t, err)
-
-		wg.Wait()
-
-		// Check that no fatal error occurred
-		select {
-		case err = <-fatalErrorChan:
-			t.Fatalf("unexpected fatal error: %v", err)
-		default:
-		}
-	})
-
-	t.Run("server with invalid TLS certificates", func(t *testing.T) {
-		cfg := NewDefaultConfig()
-		cfg.TLS.Enabled = true
-		cfg.TLS.Certificate = "/nonexistent/cert.pem"
-		cfg.TLS.Key = "/nonexistent/key.pem"
-
-		server, err := New(cfg, logger)
-		require.Error(t, err)
-		require.Nil(t, server)
-		require.Contains(t, err.Error(), "load TLS certificates")
-	})
-
-	t.Run("server with custom interceptors", func(t *testing.T) {
-		cfg := NewDefaultConfig()
-
-		customUnaryInterceptor := func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
-			return handler(ctx, req)
-		}
-		customStreamInterceptor := func(srv interface{}, stream grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
-			return handler(srv, stream)
-		}
-
-		server, err := New(cfg, logger,
-			WithUnaryInterceptors(customUnaryInterceptor),
-			WithStreamInterceptors(customStreamInterceptor))
-		require.NoError(t, err)
-		require.NotNil(t, server)
-	})
-
-	t.Run("server with metrics", func(t *testing.T) {
-		cfg := NewDefaultConfig()
-
-		server, err := New(cfg, logger, WithGRPCCallMetricsOptions(GRPCCallMetricsOptions{
-			Namespace: "test",
-		}))
-		require.NoError(t, err)
-		require.NotNil(t, server)
-		require.NotNil(t, server.grpcReqPrometheusMetrics)
-	})
+type GRPCServerTestSuite struct {
+	suite.Suite
 }
 
-func TestGRPCServer_StartAndStop(t *testing.T) {
-	logger := logtest.NewRecorder()
-	tempDirPath := t.TempDir() // t.TempDir() is called here to avoid long path issue with unix sockets
-
-	t.Run("start and stop TCP server", func(t *testing.T) {
-		cfg := NewDefaultConfig()
-		cfg.Address = ":0" // Use random available port
-
-		server, err := New(cfg, logger)
-		require.NoError(t, err)
-
-		// Register test service
-		grpc_testing.RegisterTestServiceServer(server.GRPCServer, &testGRPCService{})
-
-		// Test server start
-		fatalErrorChan := make(chan error, 1)
-		var wg sync.WaitGroup
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			server.Start(fatalErrorChan)
-		}()
-
-		// Wait a bit for server to start
-		time.Sleep(100 * time.Millisecond)
-
-		// Check that server address is set
-		require.NotEmpty(t, server.Address())
-
-		// Test graceful stop
-		err = server.Stop(true)
-		require.NoError(t, err)
-
-		wg.Wait()
-
-		// Check that no fatal error occurred
-		select {
-		case err = <-fatalErrorChan:
-			t.Fatalf("unexpected fatal error: %v", err)
-		default:
-		}
-	})
-
-	t.Run("start and stop with unix socket", func(t *testing.T) {
-		socketPath := filepath.Join(tempDirPath, "s.sock")
-
-		cfg := NewDefaultConfig()
-		cfg.UnixSocketPath = socketPath
-
-		server, err := New(cfg, logger)
-		require.NoError(t, err)
-
-		// Register test service
-		grpc_testing.RegisterTestServiceServer(server.GRPCServer, &testGRPCService{})
-
-		// Test server start
-		fatalErrorChan := make(chan error, 1)
-		var wg sync.WaitGroup
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			server.Start(fatalErrorChan)
-		}()
-
-		// Wait a bit for server to start
-		time.Sleep(200 * time.Millisecond)
-
-		// Check if server had fatal error
-		select {
-		case err := <-fatalErrorChan:
-			t.Fatalf("server failed to start: %v", err)
-		default:
-		}
-
-		// Verify address is set for unix socket
-		require.Equal(t, socketPath, server.Address())
-
-		// Verify socket file exists
-		_, err = os.Stat(socketPath)
-		require.NoError(t, err, "socket file should exist")
-
-		// Test connection via unix socket
-		conn, err := grpc.NewClient("unix:"+socketPath, grpc.WithTransportCredentials(insecure.NewCredentials()))
-		require.NoError(t, err)
-		defer conn.Close()
-
-		// Create client and make a call
-		client := grpc_testing.NewTestServiceClient(conn)
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-		defer cancel()
-
-		resp, err := client.UnaryCall(ctx, &grpc_testing.SimpleRequest{
-			Payload: &grpc_testing.Payload{Body: []byte("unix-test")},
-		})
-		require.NoError(t, err)
-		require.NotNil(t, resp)
-		require.Equal(t, "unix-test", string(resp.Payload.Body))
-
-		// Test force stop
-		err = server.Stop(false)
-		require.NoError(t, err)
-
-		wg.Wait()
-
-		// Check that no fatal error occurred
-		select {
-		case err := <-fatalErrorChan:
-			t.Fatalf("unexpected fatal error: %v", err)
-		default:
-		}
-	})
-
-	t.Run("server start with invalid address", func(t *testing.T) {
-		cfg := NewDefaultConfig()
-		cfg.Address = "invalid-address"
-
-		server, err := New(cfg, logger)
-		require.NoError(t, err)
-
-		fatalErrorChan := make(chan error, 1)
-		go server.Start(fatalErrorChan)
-
-		// Expect a fatal error
-		select {
-		case err := <-fatalErrorChan:
-			require.Error(t, err)
-		case <-time.After(time.Second):
-			t.Fatal("expected fatal error but none received")
-		}
-	})
+func TestGRPCServer(t *testing.T) {
+	suite.Run(t, new(GRPCServerTestSuite))
 }
 
-func TestGRPCServer_MetricsRegistration(t *testing.T) {
+
+func (s *GRPCServerTestSuite) TestNew_BasicServerCreation() {
 	logger := logtest.NewRecorder()
 	cfg := NewDefaultConfig()
 
-	t.Run("register and unregister metrics", func(t *testing.T) {
-		server, err := New(cfg, logger, WithGRPCCallMetricsOptions(GRPCCallMetricsOptions{
-			Namespace: "test",
-		}))
-		require.NoError(t, err)
-		require.NotNil(t, server.grpcReqPrometheusMetrics)
-
-		// Test metrics registration
-		require.NotPanics(t, func() {
-			server.MustRegisterMetrics()
-		})
-
-		// Test metrics unregistration
-		server.UnregisterMetrics()
-	})
+	server, err := New(cfg, logger)
+	s.Require().NoError(err)
+	s.Require().NotNil(server)
+	s.Require().Equal(cfg.Address, server.Address())
+	s.Require().NotNil(server.GRPCServer)
+	s.Require().Equal(logger, server.Logger)
 }
 
-func TestGRPCServer_Integration(t *testing.T) {
+func (s *GRPCServerTestSuite) TestNew_ServerWithTLS() {
 	logger := logtest.NewRecorder()
+	tmpDir := s.T().TempDir()
+	certFile := filepath.Join(tmpDir, "cert.pem")
+	keyFile := filepath.Join(tmpDir, "key.pem")
 
-	t.Run("full server lifecycle with client connection", func(t *testing.T) {
-		cfg := NewDefaultConfig()
-		cfg.Address = ":0"
+	// Generate test certificates
+	s.Require().NoError(generateTestCertificate(certFile, keyFile))
 
-		server, err := New(cfg, logger)
-		require.NoError(t, err)
+	cfg := NewDefaultConfig()
+	cfg.Address = "localhost:0"
+	cfg.TLS.Enabled = true
+	cfg.TLS.Certificate = certFile
+	cfg.TLS.Key = keyFile
 
-		// Register test service
-		grpc_testing.RegisterTestServiceServer(server.GRPCServer, &testGRPCService{})
+	server, err := New(cfg, logger)
+	s.Require().NoError(err)
+	s.Require().NotNil(server)
 
-		// Start server
-		fatalErrorChan := make(chan error, 1)
-		var wg sync.WaitGroup
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			server.Start(fatalErrorChan)
-		}()
+	// Register test service
+	grpc_testing.RegisterTestServiceServer(server.GRPCServer, &testGRPCService{})
 
-		// Wait for server to start
-		time.Sleep(100 * time.Millisecond)
+	// Start server
+	fatalErrorChan := make(chan error, 1)
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		server.Start(fatalErrorChan)
+	}()
 
-		// Create client connection
-		addr := server.Address()
-		require.NotEmpty(t, addr)
+	// Wait for server to start
+	time.Sleep(100 * time.Millisecond)
 
-		conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
-		require.NoError(t, err)
-		defer conn.Close()
+	// Create TLS credentials for client using the generated certificate
+	creds, err := buildGRPCTLSCredentials(certFile)
+	s.Require().NoError(err)
 
-		// Create client and make a call
-		client := grpc_testing.NewTestServiceClient(conn)
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-		defer cancel()
+	// Test connection with TLS
+	conn, err := grpc.NewClient(server.Address(), grpc.WithTransportCredentials(creds))
+	s.Require().NoError(err)
+	defer conn.Close()
 
-		resp, err := client.UnaryCall(ctx, &grpc_testing.SimpleRequest{
-			Payload: &grpc_testing.Payload{Body: []byte("test")},
-		})
-		require.NoError(t, err)
-		require.NotNil(t, resp)
-		require.Equal(t, "test", string(resp.Payload.Body))
+	// Create client and make a call
+	client := grpc_testing.NewTestServiceClient(conn)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
 
-		// Stop server
-		err = server.Stop(true)
-		require.NoError(t, err)
-
-		wg.Wait()
-
-		// Check that no fatal error occurred
-		select {
-		case err := <-fatalErrorChan:
-			t.Fatalf("unexpected fatal error: %v", err)
-		default:
-		}
-
-		// Verify logging occurred
-		require.Greater(t, len(logger.Entries()), 0)
-
-		// Check for server start log
-		found := false
-		for _, entry := range logger.Entries() {
-			if strings.Contains(entry.Text, "starting gRPC server") {
-				found = true
-				break
-			}
-		}
-		require.True(t, found, "expected to find 'starting gRPC server' log entry")
+	resp, err := client.UnaryCall(ctx, &grpc_testing.SimpleRequest{
+		Payload: &grpc_testing.Payload{Body: []byte("tls-test")},
 	})
+	s.Require().NoError(err)
+	s.Require().NotNil(resp)
+	s.Require().Equal("tls-test", string(resp.Payload.Body))
+
+	// Stop server
+	err = server.Stop(true)
+	s.Require().NoError(err)
+
+	wg.Wait()
+
+	// Check that no fatal error occurred
+	select {
+	case err = <-fatalErrorChan:
+		s.T().Fatalf("unexpected fatal error: %v", err)
+	default:
+	}
+}
+
+func (s *GRPCServerTestSuite) TestNew_ServerWithInvalidTLSCertificates() {
+	logger := logtest.NewRecorder()
+	cfg := NewDefaultConfig()
+	cfg.TLS.Enabled = true
+	cfg.TLS.Certificate = "/nonexistent/cert.pem"
+	cfg.TLS.Key = "/nonexistent/key.pem"
+
+	server, err := New(cfg, logger)
+	s.Require().Error(err)
+	s.Require().Nil(server)
+	s.Require().Contains(err.Error(), "load TLS certificates")
+}
+
+func (s *GRPCServerTestSuite) TestNew_ServerWithCustomInterceptors() {
+	logger := logtest.NewRecorder()
+	cfg := NewDefaultConfig()
+
+	customUnaryInterceptor := func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
+		return handler(ctx, req)
+	}
+	customStreamInterceptor := func(srv interface{}, stream grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
+		return handler(srv, stream)
+	}
+
+	server, err := New(cfg, logger,
+		WithUnaryInterceptors(customUnaryInterceptor),
+		WithStreamInterceptors(customStreamInterceptor))
+	s.Require().NoError(err)
+	s.Require().NotNil(server)
+}
+
+func (s *GRPCServerTestSuite) TestNew_ServerWithMetrics() {
+	logger := logtest.NewRecorder()
+	cfg := NewDefaultConfig()
+
+	server, err := New(cfg, logger, WithGRPCCallMetricsOptions(GRPCCallMetricsOptions{
+		Namespace: "test",
+	}))
+	s.Require().NoError(err)
+	s.Require().NotNil(server)
+	s.Require().NotNil(server.grpcReqPrometheusMetrics)
+}
+
+func (s *GRPCServerTestSuite) TestTCPServer() {
+	logger := logtest.NewRecorder()
+	cfg := NewDefaultConfig()
+	cfg.Address = ":0" // Use random available port
+
+	server, err := New(cfg, logger)
+	s.Require().NoError(err)
+
+	// Register test service
+	grpc_testing.RegisterTestServiceServer(server.GRPCServer, &testGRPCService{})
+
+	// Test server start
+	fatalErrorChan := make(chan error, 1)
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		server.Start(fatalErrorChan)
+	}()
+
+	// Wait a bit for server to start
+	time.Sleep(100 * time.Millisecond)
+
+	// Check that server address is set
+	s.Require().NotEmpty(server.Address())
+
+	// Test graceful stop
+	err = server.Stop(true)
+	s.Require().NoError(err)
+
+	wg.Wait()
+
+	// Check that no fatal error occurred
+	select {
+	case err = <-fatalErrorChan:
+		s.T().Fatalf("unexpected fatal error: %v", err)
+	default:
+	}
+}
+
+func (s *GRPCServerTestSuite) TestUnixSocket() {
+	logger := logtest.NewRecorder()
+	tempDirPath := s.T().TempDir()
+	socketPath := filepath.Join(tempDirPath, "test.sock")
+
+	cfg := NewDefaultConfig()
+	cfg.UnixSocketPath = socketPath
+
+	server, err := New(cfg, logger)
+	s.Require().NoError(err)
+
+	// Register test service
+	grpc_testing.RegisterTestServiceServer(server.GRPCServer, &testGRPCService{})
+
+	// Test server start
+	fatalErrorChan := make(chan error, 1)
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		server.Start(fatalErrorChan)
+	}()
+
+	// Wait a bit for server to start
+	time.Sleep(200 * time.Millisecond)
+
+	// Check if server had fatal error
+	select {
+	case err := <-fatalErrorChan:
+		s.T().Fatalf("server failed to start: %v", err)
+	default:
+	}
+
+	// Verify address is set for unix socket
+	s.Require().Equal(socketPath, server.Address())
+
+	// Verify socket file exists
+	_, err = os.Stat(socketPath)
+	s.Require().NoError(err, "socket file should exist")
+
+	// Test connection via unix socket
+	conn, err := grpc.NewClient("unix:"+socketPath, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	s.Require().NoError(err)
+	defer conn.Close()
+
+	// Create client and make a call
+	client := grpc_testing.NewTestServiceClient(conn)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	resp, err := client.UnaryCall(ctx, &grpc_testing.SimpleRequest{
+		Payload: &grpc_testing.Payload{Body: []byte("unix-test")},
+	})
+	s.Require().NoError(err)
+	s.Require().NotNil(resp)
+	s.Require().Equal("unix-test", string(resp.Payload.Body))
+
+	// Test force stop
+	err = server.Stop(false)
+	s.Require().NoError(err)
+
+	wg.Wait()
+
+	// Check that no fatal error occurred
+	select {
+	case err := <-fatalErrorChan:
+		s.T().Fatalf("unexpected fatal error: %v", err)
+	default:
+	}
+}
+
+func (s *GRPCServerTestSuite) TestInvalidAddress() {
+	logger := logtest.NewRecorder()
+	cfg := NewDefaultConfig()
+	cfg.Address = "invalid-address"
+
+	server, err := New(cfg, logger)
+	s.Require().NoError(err)
+
+	fatalErrorChan := make(chan error, 1)
+	go server.Start(fatalErrorChan)
+
+	// Expect a fatal error
+	select {
+	case err := <-fatalErrorChan:
+		s.Require().Error(err)
+	case <-time.After(time.Second):
+		s.T().Fatal("expected fatal error but none received")
+	}
+}
+
+func (s *GRPCServerTestSuite) TestMetricsRegistration() {
+	logger := logtest.NewRecorder()
+	cfg := NewDefaultConfig()
+
+	server, err := New(cfg, logger, WithGRPCCallMetricsOptions(GRPCCallMetricsOptions{
+		Namespace: "test",
+	}))
+	s.Require().NoError(err)
+	s.Require().NotNil(server.grpcReqPrometheusMetrics)
+
+	// Test metrics registration
+	s.Require().NotPanics(func() {
+		server.MustRegisterMetrics()
+	})
+
+	// Test metrics unregistration
+	server.UnregisterMetrics()
+}
+
+func (s *GRPCServerTestSuite) TestIntegration_FullServerLifecycleWithClientConnection() {
+	logger := logtest.NewRecorder()
+	cfg := NewDefaultConfig()
+	cfg.Address = ":0"
+
+	server, err := New(cfg, logger)
+	s.Require().NoError(err)
+
+	// Register test service
+	grpc_testing.RegisterTestServiceServer(server.GRPCServer, &testGRPCService{})
+
+	// Start server
+	fatalErrorChan := make(chan error, 1)
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		server.Start(fatalErrorChan)
+	}()
+
+	// Wait for server to start
+	time.Sleep(100 * time.Millisecond)
+
+	// Create client connection
+	addr := server.Address()
+	s.Require().NotEmpty(addr)
+
+	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	s.Require().NoError(err)
+	defer conn.Close()
+
+	// Create client and make a call
+	client := grpc_testing.NewTestServiceClient(conn)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	resp, err := client.UnaryCall(ctx, &grpc_testing.SimpleRequest{
+		Payload: &grpc_testing.Payload{Body: []byte("test")},
+	})
+	s.Require().NoError(err)
+	s.Require().NotNil(resp)
+	s.Require().Equal("test", string(resp.Payload.Body))
+
+	// Stop server
+	err = server.Stop(true)
+	s.Require().NoError(err)
+
+	wg.Wait()
+
+	// Check that no fatal error occurred
+	select {
+	case err := <-fatalErrorChan:
+		s.T().Fatalf("unexpected fatal error: %v", err)
+	default:
+	}
+
+	// Verify logging occurred
+	s.Require().Greater(len(logger.Entries()), 0)
+
+	// Check for server start log
+	found := false
+	for _, entry := range logger.Entries() {
+		if strings.Contains(entry.Text, "starting gRPC server") {
+			found = true
+			break
+		}
+	}
+	s.Require().True(found, "expected to find 'starting gRPC server' log entry")
 }
 
 type testGRPCService struct {
