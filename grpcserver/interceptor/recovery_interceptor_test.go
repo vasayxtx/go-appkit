@@ -98,3 +98,99 @@ func TestRecoveryServerUnaryInterceptorNoLogger(t *testing.T) {
 	require.ErrorIs(t, err, InternalError)
 	// Should not panic or cause issues when no logger is present
 }
+
+func TestRecoveryServerStreamInterceptorWithStackSize(t *testing.T) {
+	tests := []struct {
+		name      string
+		option    RecoveryOption
+		wantStack bool
+	}{
+		{
+			name:      "Default stack size",
+			option:    nil,
+			wantStack: true, // Default stack size is > 0
+		},
+		{
+			name:      "Custom stack size",
+			option:    WithRecoveryStackSize(4096),
+			wantStack: true,
+		},
+		{
+			name:      "Zero stack size",
+			option:    WithRecoveryStackSize(0),
+			wantStack: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			logger := logtest.NewRecorder()
+
+			var interceptor grpc.StreamServerInterceptor
+			if tt.option != nil {
+				interceptor = RecoveryServerStreamInterceptor(tt.option)
+			} else {
+				interceptor = RecoveryServerStreamInterceptor()
+			}
+
+			// Create a simple logger interceptor for testing
+			loggerInterceptor := func(srv interface{}, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
+				ctx := NewContextWithLogger(ss.Context(), logger)
+				wrappedStream := &wrappedServerStream{ServerStream: ss, ctx: ctx}
+				return handler(srv, wrappedStream)
+			}
+
+			svc, client, closeSvc, err := startTestService(
+				[]grpc.ServerOption{grpc.ChainStreamInterceptor(
+					RequestIDServerStreamInterceptor(),
+					loggerInterceptor,
+					interceptor,
+				)}, nil)
+			require.NoError(t, err)
+			defer func() { require.NoError(t, closeSvc()) }()
+
+			svc.SwitchStreamingOutputCallHandler(func(req *grpc_testing.StreamingOutputCallRequest, stream grpc_testing.TestService_StreamingOutputCallServer) error {
+				panic("test panic")
+			})
+
+			stream, err := client.StreamingOutputCall(context.Background(), &grpc_testing.StreamingOutputCallRequest{})
+			require.NoError(t, err)
+
+			_, err = stream.Recv()
+			require.ErrorIs(t, err, InternalError)
+
+			// Should have 1 log entry: panic log
+			require.Equal(t, 1, len(logger.Entries()))
+			panicEntry := logger.Entries()[0]
+			require.Contains(t, panicEntry.Text, "Panic: test panic")
+
+			stackField := getLogFieldAsString(panicEntry, "stack")
+			if tt.wantStack {
+				require.NotEmpty(t, stackField)
+				require.Contains(t, stackField, "panic") // Stack trace should contain panic info
+			} else {
+				// When stack size is 0, stack field should be empty
+				require.Empty(t, stackField)
+			}
+		})
+	}
+}
+
+func TestRecoveryServerStreamInterceptorNoLogger(t *testing.T) {
+	// Test behavior when no logger is available in context
+	svc, client, closeSvc, err := startTestService(
+		[]grpc.ServerOption{grpc.StreamInterceptor(RecoveryServerStreamInterceptor())}, nil)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, closeSvc()) }()
+
+	svc.SwitchStreamingOutputCallHandler(func(req *grpc_testing.StreamingOutputCallRequest, stream grpc_testing.TestService_StreamingOutputCallServer) error {
+		panic("test panic")
+	})
+
+	stream, err := client.StreamingOutputCall(context.Background(), &grpc_testing.StreamingOutputCallRequest{})
+	require.NoError(t, err)
+
+	_, err = stream.Recv()
+	require.ErrorIs(t, err, InternalError)
+	// Should not panic or cause issues when no logger is present
+}
