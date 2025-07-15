@@ -240,6 +240,9 @@ func (s *GRPCServer) Start(fatalError chan<- error) {
 	}
 }
 
+// Stop stops the gRPC server gracefully or forcefully based on the gracefully parameter.
+// If gracefully is true, it waits for ongoing calls to finish within the shutdown timeout.
+// If gracefully is false, it immediately terminates all connections.
 func (s *GRPCServer) Stop(gracefully bool) error {
 	if !gracefully {
 		s.Logger.Info("stopping gRPC server...")
@@ -290,6 +293,8 @@ func (s *GRPCServer) UnregisterMetrics() {
 	}
 }
 
+// Address returns the current address the server is bound to.
+// This may change after starting the server if the original address was :0.
 func (s *GRPCServer) Address() string {
 	address, _ := s.address.Load().(string)
 	return address

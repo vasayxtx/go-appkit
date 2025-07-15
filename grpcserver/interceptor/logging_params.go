@@ -9,8 +9,10 @@ import (
 	"github.com/acronis/go-appkit/log"
 )
 
+// loggableIntMap is a map that can be logged as an object with logf encoder.
 type loggableIntMap map[string]int64
 
+// EncodeLogfObject encodes the map as a logf object field.
 func (lm loggableIntMap) EncodeLogfObject(e logf.FieldEncoder) error {
 	for key, value := range lm {
 		e.EncodeFieldInt64(key, value)

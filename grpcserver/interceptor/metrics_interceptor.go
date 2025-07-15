@@ -31,10 +31,13 @@ type CallInfoMetrics struct {
 	UserAgentType string
 }
 
+// CallMethodType represents the type of gRPC method call.
 type CallMethodType string
 
 const (
+	// CallMethodTypeUnary represents a unary gRPC method call.
 	CallMethodTypeUnary  CallMethodType = "unary"
+	// CallMethodTypeStream represents a streaming gRPC method call.
 	CallMethodTypeStream CallMethodType = "stream"
 )
 

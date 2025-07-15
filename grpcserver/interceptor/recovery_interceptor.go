@@ -23,6 +23,7 @@ const (
 	RecoveryDefaultStackSize = 8192
 )
 
+// InternalError is the default error returned when a panic is recovered.
 var InternalError = status.Error(codes.Internal, "Internal error")
 
 // recoveryOptions represents options for RecoveryUnaryInterceptor.
