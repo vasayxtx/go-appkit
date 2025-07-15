@@ -88,7 +88,7 @@ type GRPCServer struct {
 	address                  atomic.Value
 	unixSocketPath           string
 	shutdownTimeout          time.Duration
-	grpcServerDone           chan struct{}
+	grpcServerDone           atomic.Value
 	grpcReqPrometheusMetrics *interceptor.PrometheusMetrics
 }
 
@@ -207,8 +207,9 @@ func New(cfg *Config, logger log.FieldLogger, options ...Option) (*GRPCServer, e
 // It's supposed that this method will be called in a separate goroutine.
 // If a fatal error occurs, it will be sent to the fatalError channel.
 func (s *GRPCServer) Start(fatalError chan<- error) {
-	s.grpcServerDone = make(chan struct{})
-	defer close(s.grpcServerDone)
+	done := make(chan struct{})
+	s.grpcServerDone.Store(done)
+	defer close(done)
 
 	logger := s.Logger.With(log.String("address", s.Address()))
 
@@ -247,8 +248,8 @@ func (s *GRPCServer) Stop(gracefully bool) error {
 	if !gracefully {
 		s.Logger.Info("stopping gRPC server...")
 		s.GRPCServer.Stop()
-		if s.grpcServerDone != nil {
-			<-s.grpcServerDone // wait for the server to be stopped
+		if done, ok := s.grpcServerDone.Load().(chan struct{}); ok && done != nil {
+			<-done // wait for the server to be stopped
 		}
 		return nil
 	}
@@ -272,8 +273,8 @@ func (s *GRPCServer) Stop(gracefully bool) error {
 		s.GRPCServer.Stop()
 	}
 
-	if s.grpcServerDone != nil {
-		<-s.grpcServerDone // wait for the server to be stopped
+	if done, ok := s.grpcServerDone.Load().(chan struct{}); ok && done != nil {
+		<-done // wait for the server to be stopped
 	}
 
 	return nil
