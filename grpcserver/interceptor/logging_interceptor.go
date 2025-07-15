@@ -27,11 +27,11 @@ const headerUserAgentKey = "user-agent"
 
 const defaultSlowCallThreshold = 1 * time.Second
 
-// CustomLoggerProvider returns a custom logger or nil based on the gRPC context and method info.
-type CustomLoggerProvider func(ctx context.Context, info *grpc.UnaryServerInfo) log.FieldLogger
+// UnaryCustomLoggerProvider returns a custom logger or nil based on the gRPC context and method info.
+type UnaryCustomLoggerProvider func(ctx context.Context, info *grpc.UnaryServerInfo) log.FieldLogger
 
-// CustomStreamLoggerProvider returns a custom logger or nil based on the gRPC context and stream method info.
-type CustomStreamLoggerProvider func(ctx context.Context, info *grpc.StreamServerInfo) log.FieldLogger
+// StreamCustomLoggerProvider returns a custom logger or nil based on the gRPC context and stream method info.
+type StreamCustomLoggerProvider func(ctx context.Context, info *grpc.StreamServerInfo) log.FieldLogger
 
 // LoggingOption represents a configuration option for the logging interceptor.
 type LoggingOption func(*loggingOptions)
@@ -42,8 +42,8 @@ type loggingOptions struct {
 	excludedMethods            []string
 	addCallInfoToLogger        bool
 	slowCallThreshold          time.Duration
-	customLoggerProvider       CustomLoggerProvider
-	customStreamLoggerProvider CustomStreamLoggerProvider
+	unaryCustomLoggerProvider  UnaryCustomLoggerProvider
+	streamCustomLoggerProvider StreamCustomLoggerProvider
 }
 
 // WithLoggingCallStart enables logging of call start events.
@@ -81,17 +81,17 @@ func WithLoggingSlowCallThreshold(threshold time.Duration) LoggingOption {
 	}
 }
 
-// WithLoggingCustomLoggerProvider sets a custom logger provider function.
-func WithLoggingCustomLoggerProvider(provider CustomLoggerProvider) LoggingOption {
+// WithLoggingUnaryCustomLoggerProvider sets a custom logger provider function.
+func WithLoggingUnaryCustomLoggerProvider(provider UnaryCustomLoggerProvider) LoggingOption {
 	return func(opts *loggingOptions) {
-		opts.customLoggerProvider = provider
+		opts.unaryCustomLoggerProvider = provider
 	}
 }
 
-// WithLoggingCustomStreamLoggerProvider sets a custom logger provider function for stream interceptors.
-func WithLoggingCustomStreamLoggerProvider(provider CustomStreamLoggerProvider) LoggingOption {
+// WithLoggingStreamCustomLoggerProvider sets a custom logger provider function for stream interceptors.
+func WithLoggingStreamCustomLoggerProvider(provider StreamCustomLoggerProvider) LoggingOption {
 	return func(opts *loggingOptions) {
-		opts.customStreamLoggerProvider = provider
+		opts.streamCustomLoggerProvider = provider
 	}
 }
 
@@ -110,8 +110,8 @@ func LoggingUnaryInterceptor(logger log.FieldLogger, options ...LoggingOption) f
 		ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler,
 	) (interface{}, error) {
 		loggerProvider := func(ctx context.Context) log.FieldLogger {
-			if opts.customLoggerProvider != nil {
-				if l := opts.customLoggerProvider(ctx, info); l != nil {
+			if opts.unaryCustomLoggerProvider != nil {
+				if l := opts.unaryCustomLoggerProvider(ctx, info); l != nil {
 					return l
 				}
 			}
@@ -143,8 +143,8 @@ func LoggingStreamInterceptor(logger log.FieldLogger, options ...LoggingOption) 
 		srv interface{}, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler,
 	) error {
 		loggerProvider := func(ctx context.Context) log.FieldLogger {
-			if opts.customStreamLoggerProvider != nil {
-				if l := opts.customStreamLoggerProvider(ctx, info); l != nil {
+			if opts.streamCustomLoggerProvider != nil {
+				if l := opts.streamCustomLoggerProvider(ctx, info); l != nil {
 					return l
 				}
 			}

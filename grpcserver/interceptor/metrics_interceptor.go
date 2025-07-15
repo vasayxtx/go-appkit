@@ -17,16 +17,18 @@ import (
 )
 
 const (
-	callMetricsLabelService    = "grpc_service"
-	callMetricsLabelMethod     = "grpc_method"
-	callMetricsLabelMethodType = "grpc_method_type"
-	callMetricsLabelCode       = "grpc_code"
+	callMetricsLabelService       = "grpc_service"
+	callMetricsLabelMethod        = "grpc_method"
+	callMetricsLabelMethodType    = "grpc_method_type"
+	callMetricsLabelUserAgentType = "user_agent_type"
+	callMetricsLabelCode          = "grpc_code"
 )
 
 // CallInfoMetrics represents a call info for collecting metrics.
 type CallInfoMetrics struct {
-	Service string
-	Method  string
+	Service       string
+	Method        string
+	UserAgentType string
 }
 
 type CallMethodType string
@@ -35,6 +37,12 @@ const (
 	CallMethodTypeUnary  CallMethodType = "unary"
 	CallMethodTypeStream CallMethodType = "stream"
 )
+
+// UnaryUserAgentTypeProvider returns a user agent type or empty string based on the gRPC context and method info.
+type UnaryUserAgentTypeProvider func(ctx context.Context, info *grpc.UnaryServerInfo) string
+
+// StreamUserAgentTypeProvider returns a user agent type or empty string based on the gRPC context and stream method info.
+type StreamUserAgentTypeProvider func(ctx context.Context, info *grpc.StreamServerInfo) string
 
 // MetricsCollector is an interface for collecting metrics for incoming gRPC calls.
 type MetricsCollector interface {
@@ -122,6 +130,7 @@ func NewPrometheusMetrics(opts ...PrometheusOption) *PrometheusMetrics {
 			callMetricsLabelService,
 			callMetricsLabelMethod,
 			callMetricsLabelMethodType,
+			callMetricsLabelUserAgentType,
 			callMetricsLabelCode,
 		),
 	)
@@ -137,6 +146,7 @@ func NewPrometheusMetrics(opts ...PrometheusOption) *PrometheusMetrics {
 			callMetricsLabelService,
 			callMetricsLabelMethod,
 			callMetricsLabelMethodType,
+			callMetricsLabelUserAgentType,
 		),
 	)
 
@@ -171,18 +181,20 @@ func (pm *PrometheusMetrics) Unregister() {
 // IncInFlightCalls increments the counter of in-flight calls.
 func (pm *PrometheusMetrics) IncInFlightCalls(callInfo CallInfoMetrics, methodType CallMethodType) {
 	pm.InFlight.With(prometheus.Labels{
-		callMetricsLabelService:    callInfo.Service,
-		callMetricsLabelMethod:     callInfo.Method,
-		callMetricsLabelMethodType: string(methodType),
+		callMetricsLabelService:       callInfo.Service,
+		callMetricsLabelMethod:        callInfo.Method,
+		callMetricsLabelMethodType:    string(methodType),
+		callMetricsLabelUserAgentType: callInfo.UserAgentType,
 	}).Inc()
 }
 
 // DecInFlightCalls decrements the counter of in-flight calls.
 func (pm *PrometheusMetrics) DecInFlightCalls(callInfo CallInfoMetrics, methodType CallMethodType) {
 	pm.InFlight.With(prometheus.Labels{
-		callMetricsLabelService:    callInfo.Service,
-		callMetricsLabelMethod:     callInfo.Method,
-		callMetricsLabelMethodType: string(methodType),
+		callMetricsLabelService:       callInfo.Service,
+		callMetricsLabelMethod:        callInfo.Method,
+		callMetricsLabelMethodType:    string(methodType),
+		callMetricsLabelUserAgentType: callInfo.UserAgentType,
 	}).Dec()
 }
 
@@ -191,10 +203,11 @@ func (pm *PrometheusMetrics) ObserveCallFinish(
 	callInfo CallInfoMetrics, methodType CallMethodType, code codes.Code, startTime time.Time,
 ) {
 	pm.Durations.With(prometheus.Labels{
-		callMetricsLabelService:    callInfo.Service,
-		callMetricsLabelMethod:     callInfo.Method,
-		callMetricsLabelCode:       code.String(),
-		callMetricsLabelMethodType: string(methodType),
+		callMetricsLabelService:       callInfo.Service,
+		callMetricsLabelMethod:        callInfo.Method,
+		callMetricsLabelCode:          code.String(),
+		callMetricsLabelMethodType:    string(methodType),
+		callMetricsLabelUserAgentType: callInfo.UserAgentType,
 	}).Observe(time.Since(startTime).Seconds())
 }
 
@@ -203,13 +216,29 @@ type MetricsOption func(*metricsOptions)
 
 // metricsOptions holds options for configuring the metrics interceptor.
 type metricsOptions struct {
-	excludedMethods []string
+	excludedMethods             []string
+	unaryUserAgentTypeProvider  UnaryUserAgentTypeProvider
+	streamUserAgentTypeProvider StreamUserAgentTypeProvider
 }
 
 // WithMetricsExcludedMethods returns an option that excludes the specified methods from metrics collection.
 func WithMetricsExcludedMethods(methods ...string) MetricsOption {
 	return func(c *metricsOptions) {
 		c.excludedMethods = append(c.excludedMethods, methods...)
+	}
+}
+
+// WithMetricsUnaryUserAgentTypeProvider sets a user agent type provider for unary interceptors.
+func WithMetricsUnaryUserAgentTypeProvider(provider UnaryUserAgentTypeProvider) MetricsOption {
+	return func(c *metricsOptions) {
+		c.unaryUserAgentTypeProvider = provider
+	}
+}
+
+// WithMetricsStreamUserAgentTypeProvider sets a user agent type provider for stream interceptors.
+func WithMetricsStreamUserAgentTypeProvider(provider StreamUserAgentTypeProvider) MetricsOption {
+	return func(c *metricsOptions) {
+		c.streamUserAgentTypeProvider = provider
 	}
 }
 
@@ -224,7 +253,7 @@ func isMethodExcluded(fullMethod string, excludedMethods []string) bool {
 }
 
 // prepareCallMetrics prepares the call metrics information and manages start time.
-func prepareCallMetrics(ctx context.Context, fullMethod string) (
+func prepareCallMetrics(ctx context.Context, fullMethod string, userAgentType string) (
 	newCtx context.Context, callInfo CallInfoMetrics, startTime time.Time, startTimeGenerated bool,
 ) {
 	startTime = GetCallStartTimeFromContext(ctx)
@@ -236,8 +265,9 @@ func prepareCallMetrics(ctx context.Context, fullMethod string) (
 
 	service, method := splitFullMethodName(fullMethod)
 	callInfo = CallInfoMetrics{
-		Service: service,
-		Method:  method,
+		Service:       service,
+		Method:        method,
+		UserAgentType: userAgentType,
 	}
 
 	return ctx, callInfo, startTime, startTimeGenerated
@@ -259,7 +289,12 @@ func MetricsUnaryInterceptor(
 			return handler(ctx, req)
 		}
 
-		ctx, callInfo, startTime, _ := prepareCallMetrics(ctx, info.FullMethod)
+		userAgentType := ""
+		if config.unaryUserAgentTypeProvider != nil {
+			userAgentType = config.unaryUserAgentTypeProvider(ctx, info)
+		}
+
+		ctx, callInfo, startTime, _ := prepareCallMetrics(ctx, info.FullMethod, userAgentType)
 
 		collector.IncInFlightCalls(callInfo, CallMethodTypeUnary)
 		defer collector.DecInFlightCalls(callInfo, CallMethodTypeUnary)
@@ -286,7 +321,12 @@ func MetricsStreamInterceptor(
 			return handler(srv, ss)
 		}
 
-		ctx, callInfo, startTime, startTimeGenerated := prepareCallMetrics(ss.Context(), info.FullMethod)
+		userAgentType := ""
+		if config.streamUserAgentTypeProvider != nil {
+			userAgentType = config.streamUserAgentTypeProvider(ss.Context(), info)
+		}
+
+		ctx, callInfo, startTime, startTimeGenerated := prepareCallMetrics(ss.Context(), info.FullMethod, userAgentType)
 
 		collector.IncInFlightCalls(callInfo, CallMethodTypeStream)
 		defer collector.DecInFlightCalls(callInfo, CallMethodTypeStream)

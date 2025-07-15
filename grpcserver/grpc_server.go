@@ -25,11 +25,19 @@ import (
 	"github.com/acronis/go-appkit/service"
 )
 
-// GRPCCallMetricsOptions represents options for gRPC request metrics that used in GRPCServer.
-type GRPCCallMetricsOptions struct {
-	Namespace       string
-	DurationBuckets []float64
-	ConstLabels     prometheus.Labels
+// LoggingOptions represents options for gRPC request logging that used in GRPCServer.
+type LoggingOptions struct {
+	UnaryCustomLoggerProvider  func(ctx context.Context, info *grpc.UnaryServerInfo) log.FieldLogger
+	StreamCustomLoggerProvider func(ctx context.Context, info *grpc.StreamServerInfo) log.FieldLogger
+}
+
+// MetricsOptions represents options for gRPC request metrics that used in GRPCServer.
+type MetricsOptions struct {
+	Namespace                   string
+	DurationBuckets             []float64
+	ConstLabels                 prometheus.Labels
+	UnaryUserAgentTypeProvider  func(ctx context.Context, info *grpc.UnaryServerInfo) string
+	StreamUserAgentTypeProvider func(ctx context.Context, info *grpc.StreamServerInfo) string
 }
 
 // Option represents a functional option for configuring GRPCServer.
@@ -39,7 +47,8 @@ type Option func(*serverOptions)
 type serverOptions struct {
 	unaryInterceptors  []grpc.UnaryServerInterceptor
 	streamInterceptors []grpc.StreamServerInterceptor
-	grpcRequestMetrics GRPCCallMetricsOptions
+	metricsOptions     MetricsOptions
+	loggingOptions     LoggingOptions
 }
 
 // WithUnaryInterceptors adds unary interceptors to the server.
@@ -56,10 +65,17 @@ func WithStreamInterceptors(interceptors ...grpc.StreamServerInterceptor) Option
 	}
 }
 
-// WithGRPCCallMetricsOptions configures gRPC request metrics.
-func WithGRPCCallMetricsOptions(opts GRPCCallMetricsOptions) Option {
+// WithLoggingOptions configures gRPC request logging.
+func WithLoggingOptions(opts LoggingOptions) Option {
 	return func(o *serverOptions) {
-		o.grpcRequestMetrics = opts
+		o.loggingOptions = opts
+	}
+}
+
+// WithMetricsOptions configures gRPC request metrics.
+func WithMetricsOptions(opts MetricsOptions) Option {
+	return func(o *serverOptions) {
+		o.metricsOptions = opts
 	}
 }
 
@@ -125,24 +141,34 @@ func New(cfg *Config, logger log.FieldLogger, options ...Option) (*GRPCServer, e
 		serverOpts = append(serverOpts, grpc.MaxSendMsgSize(maxSendMsgSize))
 	}
 
-	promMetrics := interceptor.NewPrometheusMetrics(
-		interceptor.WithPrometheusNamespace(opts.grpcRequestMetrics.Namespace),
-		interceptor.WithPrometheusDurationBuckets(opts.grpcRequestMetrics.DurationBuckets),
-		interceptor.WithPrometheusConstLabels(opts.grpcRequestMetrics.ConstLabels))
-
 	loggingOptions := []interceptor.LoggingOption{
 		interceptor.WithLoggingCallStart(cfg.Log.CallStart),
 		interceptor.WithLoggingSlowCallThreshold(time.Duration(cfg.Log.SlowCallThreshold)),
 		interceptor.WithLoggingExcludedMethods(cfg.Log.ExcludedMethods...),
+	}
+	unaryLoggingOptions := append(loggingOptions,
+		interceptor.WithLoggingUnaryCustomLoggerProvider(opts.loggingOptions.UnaryCustomLoggerProvider))
+	streamLoggingOptions := append(loggingOptions,
+		interceptor.WithLoggingStreamCustomLoggerProvider(opts.loggingOptions.StreamCustomLoggerProvider))
+
+	promMetrics := interceptor.NewPrometheusMetrics(
+		interceptor.WithPrometheusNamespace(opts.metricsOptions.Namespace),
+		interceptor.WithPrometheusDurationBuckets(opts.metricsOptions.DurationBuckets),
+		interceptor.WithPrometheusConstLabels(opts.metricsOptions.ConstLabels))
+	unaryMetricsOptions := []interceptor.MetricsOption{
+		interceptor.WithMetricsUnaryUserAgentTypeProvider(opts.metricsOptions.UnaryUserAgentTypeProvider),
+	}
+	streamMetricsOptions := []interceptor.MetricsOption{
+		interceptor.WithMetricsStreamUserAgentTypeProvider(opts.metricsOptions.StreamUserAgentTypeProvider),
 	}
 
 	// Build unary interceptors chain
 	unaryInterceptors := []grpc.UnaryServerInterceptor{
 		callStartTimeUnaryInterceptor(),
 		interceptor.RequestIDUnaryInterceptor(),
-		interceptor.LoggingUnaryInterceptor(logger, loggingOptions...),
+		interceptor.LoggingUnaryInterceptor(logger, unaryLoggingOptions...),
 		interceptor.RecoveryUnaryInterceptor(),
-		interceptor.MetricsUnaryInterceptor(promMetrics),
+		interceptor.MetricsUnaryInterceptor(promMetrics, unaryMetricsOptions...),
 	}
 	unaryInterceptors = append(unaryInterceptors, opts.unaryInterceptors...)
 	if len(unaryInterceptors) > 0 {
@@ -153,9 +179,9 @@ func New(cfg *Config, logger log.FieldLogger, options ...Option) (*GRPCServer, e
 	streamInterceptors := []grpc.StreamServerInterceptor{
 		callStartTimeStreamInterceptor(),
 		interceptor.RequestIDStreamInterceptor(),
-		interceptor.LoggingStreamInterceptor(logger, loggingOptions...),
+		interceptor.LoggingStreamInterceptor(logger, streamLoggingOptions...),
 		interceptor.RecoveryStreamInterceptor(),
-		interceptor.MetricsStreamInterceptor(promMetrics),
+		interceptor.MetricsStreamInterceptor(promMetrics, streamMetricsOptions...),
 	}
 	streamInterceptors = append(streamInterceptors, opts.streamInterceptors...)
 	if len(opts.streamInterceptors) > 0 {

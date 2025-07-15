@@ -49,7 +49,7 @@ func (s *MetricsInterceptorTestSuite) TestMetricsServerInterceptorHistogram() {
 	getHist := func(code codes.Code) prometheus.Histogram {
 		methodName, methodType := s.getMethodNameAndType()
 		return promMetrics.Durations.WithLabelValues(
-			"grpc.testing.TestService", methodName, string(methodType), code.String()).(prometheus.Histogram)
+			"grpc.testing.TestService", methodName, string(methodType), "", code.String()).(prometheus.Histogram)
 	}
 
 	testutil.RequireSamplesCountInHistogram(s.T(), getHist(codes.OK), 0)
@@ -81,7 +81,7 @@ func (s *MetricsInterceptorTestSuite) TestMetricsServerInterceptorInFlight() {
 
 	methodName, methodType := s.getMethodNameAndType()
 	gauge := promMetrics.InFlight.WithLabelValues(
-		"grpc.testing.TestService", methodName, string(methodType))
+		"grpc.testing.TestService", methodName, string(methodType), "")
 
 	requireSamplesCountInGauge(s.T(), gauge, 0)
 
@@ -112,7 +112,7 @@ func (s *MetricsInterceptorTestSuite) TestMetricsServerInterceptorExcludedMethod
 
 	getHist := func(code codes.Code) prometheus.Histogram {
 		return promMetrics.Durations.WithLabelValues(
-			"grpc.testing.TestService", methodName, string(methodType), code.String()).(prometheus.Histogram)
+			"grpc.testing.TestService", methodName, string(methodType), "", code.String()).(prometheus.Histogram)
 	}
 
 	err = s.makeCall(client)
@@ -133,7 +133,7 @@ func (s *MetricsInterceptorTestSuite) TestMetricsServerInterceptorMultipleExclud
 
 	getHist := func(code codes.Code) prometheus.Histogram {
 		return promMetrics.Durations.WithLabelValues(
-			"grpc.testing.TestService", methodName, string(methodType), code.String()).(prometheus.Histogram)
+			"grpc.testing.TestService", methodName, string(methodType), "", code.String()).(prometheus.Histogram)
 	}
 
 	err = s.makeCall(client)
@@ -154,7 +154,100 @@ func (s *MetricsInterceptorTestSuite) TestMetricsServerInterceptorVariadicOption
 	methodName, methodType := s.getMethodNameAndType()
 	getHist := func(code codes.Code) prometheus.Histogram {
 		return promMetrics.Durations.WithLabelValues(
-			"grpc.testing.TestService", methodName, string(methodType), code.String()).(prometheus.Histogram)
+			"grpc.testing.TestService", methodName, string(methodType), "", code.String()).(prometheus.Histogram)
+	}
+
+	testutil.RequireSamplesCountInHistogram(s.T(), getHist(codes.OK), 0)
+
+	err = s.makeCall(client)
+	s.Require().NoError(err)
+
+	testutil.RequireSamplesCountInHistogram(s.T(), getHist(codes.OK), 1)
+}
+
+func (s *MetricsInterceptorTestSuite) TestMetricsServerInterceptorWithUserAgentTypeProvider() {
+	promMetrics := NewPrometheusMetrics()
+
+	userAgentType := "test-client"
+	var opts []MetricsOption
+	if s.IsUnary {
+		opts = []MetricsOption{WithMetricsUnaryUserAgentTypeProvider(func(ctx context.Context, info *grpc.UnaryServerInfo) string {
+			return userAgentType
+		})}
+	} else {
+		opts = []MetricsOption{WithMetricsStreamUserAgentTypeProvider(func(ctx context.Context, info *grpc.StreamServerInfo) string {
+			return userAgentType
+		})}
+	}
+
+	_, client, closeSvc, err := s.createTestServiceWithOptions(promMetrics, opts...)
+	s.Require().NoError(err)
+	defer func() { s.Require().NoError(closeSvc()) }()
+
+	methodName, methodType := s.getMethodNameAndType()
+	getHist := func(code codes.Code) prometheus.Histogram {
+		return promMetrics.Durations.WithLabelValues(
+			"grpc.testing.TestService", methodName, string(methodType), userAgentType, code.String()).(prometheus.Histogram)
+	}
+
+	gauge := promMetrics.InFlight.WithLabelValues(
+		"grpc.testing.TestService", methodName, string(methodType), userAgentType)
+
+	// Check initial state
+	testutil.RequireSamplesCountInHistogram(s.T(), getHist(codes.OK), 0)
+	requireSamplesCountInGauge(s.T(), gauge, 0)
+
+	err = s.makeCall(client)
+	s.Require().NoError(err)
+
+	// Check after call
+	testutil.RequireSamplesCountInHistogram(s.T(), getHist(codes.OK), 1)
+	requireSamplesCountInGauge(s.T(), gauge, 0)
+}
+
+func (s *MetricsInterceptorTestSuite) TestMetricsServerInterceptorWithEmptyUserAgentTypeProvider() {
+	promMetrics := NewPrometheusMetrics()
+
+	var opts []MetricsOption
+	if s.IsUnary {
+		opts = []MetricsOption{WithMetricsUnaryUserAgentTypeProvider(func(ctx context.Context, info *grpc.UnaryServerInfo) string {
+			return ""
+		})}
+	} else {
+		opts = []MetricsOption{WithMetricsStreamUserAgentTypeProvider(func(ctx context.Context, info *grpc.StreamServerInfo) string {
+			return ""
+		})}
+	}
+
+	_, client, closeSvc, err := s.createTestServiceWithOptions(promMetrics, opts...)
+	s.Require().NoError(err)
+	defer func() { s.Require().NoError(closeSvc()) }()
+
+	methodName, methodType := s.getMethodNameAndType()
+	getHist := func(code codes.Code) prometheus.Histogram {
+		return promMetrics.Durations.WithLabelValues(
+			"grpc.testing.TestService", methodName, string(methodType), "", code.String()).(prometheus.Histogram)
+	}
+
+	testutil.RequireSamplesCountInHistogram(s.T(), getHist(codes.OK), 0)
+
+	err = s.makeCall(client)
+	s.Require().NoError(err)
+
+	testutil.RequireSamplesCountInHistogram(s.T(), getHist(codes.OK), 1)
+}
+
+func (s *MetricsInterceptorTestSuite) TestMetricsServerInterceptorWithoutUserAgentTypeProvider() {
+	promMetrics := NewPrometheusMetrics()
+
+	_, client, closeSvc, err := s.createTestServiceWithOptions(promMetrics)
+	s.Require().NoError(err)
+	defer func() { s.Require().NoError(closeSvc()) }()
+
+	methodName, methodType := s.getMethodNameAndType()
+	getHist := func(code codes.Code) prometheus.Histogram {
+		return promMetrics.Durations.WithLabelValues(
+			"grpc.testing.TestService", methodName, string(methodType), "", code.String()).(prometheus.Histogram)
 	}
 
 	testutil.RequireSamplesCountInHistogram(s.T(), getHist(codes.OK), 0)

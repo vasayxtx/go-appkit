@@ -42,7 +42,6 @@ func TestGRPCServer(t *testing.T) {
 	suite.Run(t, new(GRPCServerTestSuite))
 }
 
-
 func (s *GRPCServerTestSuite) TestNew_BasicServerCreation() {
 	logger := logtest.NewRecorder()
 	cfg := NewDefaultConfig()
@@ -159,7 +158,7 @@ func (s *GRPCServerTestSuite) TestNew_ServerWithMetrics() {
 	logger := logtest.NewRecorder()
 	cfg := NewDefaultConfig()
 
-	server, err := New(cfg, logger, WithGRPCCallMetricsOptions(GRPCCallMetricsOptions{
+	server, err := New(cfg, logger, WithMetricsOptions(MetricsOptions{
 		Namespace: "test",
 	}))
 	s.Require().NoError(err)
@@ -302,7 +301,7 @@ func (s *GRPCServerTestSuite) TestMetricsRegistration() {
 	logger := logtest.NewRecorder()
 	cfg := NewDefaultConfig()
 
-	server, err := New(cfg, logger, WithGRPCCallMetricsOptions(GRPCCallMetricsOptions{
+	server, err := New(cfg, logger, WithMetricsOptions(MetricsOptions{
 		Namespace: "test",
 	}))
 	s.Require().NoError(err)

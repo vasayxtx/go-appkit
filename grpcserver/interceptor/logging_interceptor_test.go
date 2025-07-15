@@ -625,11 +625,11 @@ func (s *LoggingInterceptorTestSuite) getMethodPath() string {
 
 func (s *LoggingInterceptorTestSuite) getCustomLoggerProvider(customLogger log.FieldLogger) LoggingOption {
 	if s.IsUnary {
-		return WithLoggingCustomLoggerProvider(func(ctx context.Context, info *grpc.UnaryServerInfo) log.FieldLogger {
+		return WithLoggingUnaryCustomLoggerProvider(func(ctx context.Context, info *grpc.UnaryServerInfo) log.FieldLogger {
 			return customLogger
 		})
 	}
-	return WithLoggingCustomStreamLoggerProvider(func(ctx context.Context, info *grpc.StreamServerInfo) log.FieldLogger {
+	return WithLoggingStreamCustomLoggerProvider(func(ctx context.Context, info *grpc.StreamServerInfo) log.FieldLogger {
 		return customLogger
 	})
 }
