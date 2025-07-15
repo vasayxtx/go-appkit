@@ -184,7 +184,7 @@ func New(cfg *Config, logger log.FieldLogger, options ...Option) (*GRPCServer, e
 		interceptor.MetricsStreamInterceptor(promMetrics, streamMetricsOptions...),
 	}
 	streamInterceptors = append(streamInterceptors, opts.streamInterceptors...)
-	if len(opts.streamInterceptors) > 0 {
+	if len(streamInterceptors) > 0 {
 		serverOpts = append(serverOpts, grpc.ChainStreamInterceptor(streamInterceptors...))
 	}
 
