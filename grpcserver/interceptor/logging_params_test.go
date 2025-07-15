@@ -83,7 +83,7 @@ func TestLoggingParams_ConcurrentAccess(t *testing.T) {
 
 	// Test concurrent access to time slots
 	done := make(chan struct{})
-	
+
 	// Start multiple goroutines that add time slots
 	for i := 0; i < 10; i++ {
 		go func(val int) {
@@ -102,7 +102,7 @@ func TestLoggingParams_ConcurrentAccess(t *testing.T) {
 	// Check that all values were accumulated correctly
 	timeSlots := lp.getTimeSlots()
 	require.Len(t, timeSlots, 1)
-	
+
 	// Expected value: sum of (0+1+2+...+9) * 100 = 45 * 100 = 4500
 	expectedSum := int64(0)
 	for i := 0; i < 10; i++ {
@@ -166,7 +166,6 @@ func TestLoggableIntMap_EncodeLogfObject_Empty(t *testing.T) {
 	require.Empty(t, lim)
 }
 
-
 func TestLoggingParams_Integration(t *testing.T) {
 	lp := &LoggingParams{}
 
@@ -186,7 +185,7 @@ func TestLoggingParams_Integration(t *testing.T) {
 
 	timeSlots := lp.getTimeSlots()
 	require.Len(t, timeSlots, 2)
-	require.Equal(t, int64(75), timeSlots["db_query"])     // 50 + 25 = 75ms
+	require.Equal(t, int64(75), timeSlots["db_query"])      // 50 + 25 = 75ms
 	require.Equal(t, int64(100), timeSlots["external_api"]) // 100ms
 
 	// Test creating the time_slots field for logging

@@ -11,10 +11,11 @@ import (
 	"fmt"
 	"runtime"
 
-	"github.com/acronis/go-appkit/log"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+
+	"github.com/acronis/go-appkit/log"
 )
 
 const (

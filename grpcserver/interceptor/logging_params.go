@@ -4,8 +4,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/acronis/go-appkit/log"
 	"github.com/ssgreg/logf"
+
+	"github.com/acronis/go-appkit/log"
 )
 
 type loggableIntMap map[string]int64

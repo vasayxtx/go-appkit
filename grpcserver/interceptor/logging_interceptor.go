@@ -277,12 +277,13 @@ func buildCallInfoLogFields(
 	return logFields
 }
 
-func splitFullMethodName(fullMethod string) (string, string) {
+func splitFullMethodName(fullMethod string) (service string, method string) {
+	const unknown = "unknown"
 	fullMethod = strings.TrimPrefix(fullMethod, "/") // remove leading slash
 	if i := strings.Index(fullMethod, "/"); i >= 0 {
 		return fullMethod[:i], fullMethod[i+1:]
 	}
-	return "unknown", "unknown"
+	return unknown, unknown
 }
 
 func isLoggingDisabled(fullMethod string, excludedMethods []string) bool {

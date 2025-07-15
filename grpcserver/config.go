@@ -287,23 +287,28 @@ func (c *Config) Set(dp config.DataProvider) error {
 		return err
 	}
 
-	if err = c.TLS.Set(dp); err != nil {
+	err = c.TLS.Set(dp)
+	if err != nil {
 		return err
 	}
 
-	if err = c.Timeouts.Set(dp); err != nil {
+	err = c.Timeouts.Set(dp)
+	if err != nil {
 		return err
 	}
 
-	if err = c.Keepalive.Set(dp); err != nil {
+	err = c.Keepalive.Set(dp)
+	if err != nil {
 		return err
 	}
 
-	if err = c.Limits.Set(dp); err != nil {
+	err = c.Limits.Set(dp)
+	if err != nil {
 		return err
 	}
 
-	if err = c.Log.Set(dp); err != nil {
+	err = c.Log.Set(dp)
+	if err != nil {
 		return err
 	}
 

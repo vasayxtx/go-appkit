@@ -114,19 +114,17 @@ func New(cfg *Config, logger log.FieldLogger, options ...Option) (*GRPCServer, e
 		}
 		creds := credentials.NewTLS(&tls.Config{
 			Certificates: []tls.Certificate{cert},
+			MinVersion:   tls.VersionTLS12,
 		})
 		serverOpts = append(serverOpts, grpc.Creds(creds))
 	}
 
 	// Add keepalive parameters
-	serverOpts = append(serverOpts, grpc.KeepaliveParams(keepalive.ServerParameters{
-		Time:    time.Duration(cfg.Keepalive.Time),
-		Timeout: time.Duration(cfg.Keepalive.Timeout),
-	}))
-	serverOpts = append(serverOpts, grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
-		MinTime:             time.Duration(cfg.Keepalive.MinTime),
-		PermitWithoutStream: true,
-	}))
+	serverOpts = append(serverOpts,
+		grpc.KeepaliveParams(
+			keepalive.ServerParameters{Time: time.Duration(cfg.Keepalive.Time), Timeout: time.Duration(cfg.Keepalive.Timeout)}),
+		grpc.KeepaliveEnforcementPolicy(
+			keepalive.EnforcementPolicy{MinTime: time.Duration(cfg.Keepalive.MinTime), PermitWithoutStream: true}))
 
 	// Add limits
 	if cfg.Limits.MaxConcurrentStreams > 0 {
@@ -146,9 +144,11 @@ func New(cfg *Config, logger log.FieldLogger, options ...Option) (*GRPCServer, e
 		interceptor.WithLoggingSlowCallThreshold(time.Duration(cfg.Log.SlowCallThreshold)),
 		interceptor.WithLoggingExcludedMethods(cfg.Log.ExcludedMethods...),
 	}
-	unaryLoggingOptions := append(loggingOptions,
+	unaryLoggingOptions := append([]interceptor.LoggingOption(nil), loggingOptions...)
+	unaryLoggingOptions = append(unaryLoggingOptions,
 		interceptor.WithLoggingUnaryCustomLoggerProvider(opts.loggingOptions.UnaryCustomLoggerProvider))
-	streamLoggingOptions := append(loggingOptions,
+	streamLoggingOptions := append([]interceptor.LoggingOption(nil), loggingOptions...)
+	streamLoggingOptions = append(streamLoggingOptions,
 		interceptor.WithLoggingStreamCustomLoggerProvider(opts.loggingOptions.StreamCustomLoggerProvider))
 
 	promMetrics := interceptor.NewPrometheusMetrics(

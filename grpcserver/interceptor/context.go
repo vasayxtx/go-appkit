@@ -8,8 +8,9 @@ package interceptor
 
 import (
 	"context"
-	"google.golang.org/grpc"
 	"time"
+
+	"google.golang.org/grpc"
 
 	"github.com/acronis/go-appkit/log"
 )
