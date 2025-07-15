@@ -172,9 +172,9 @@ func (s *MetricsInterceptorTestSuite) createTestService(promMetrics *PrometheusM
 func (s *MetricsInterceptorTestSuite) createTestServiceWithOptions(promMetrics *PrometheusMetrics, options ...MetricsOption) (*testService, grpc_testing.TestServiceClient, func() error, error) {
 	var serverOptions []grpc.ServerOption
 	if s.IsUnary {
-		serverOptions = []grpc.ServerOption{grpc.UnaryInterceptor(MetricsServerUnaryInterceptor(promMetrics, options...))}
+		serverOptions = []grpc.ServerOption{grpc.UnaryInterceptor(MetricsUnaryInterceptor(promMetrics, options...))}
 	} else {
-		serverOptions = []grpc.ServerOption{grpc.StreamInterceptor(MetricsServerStreamInterceptor(promMetrics, options...))}
+		serverOptions = []grpc.ServerOption{grpc.StreamInterceptor(MetricsStreamInterceptor(promMetrics, options...))}
 	}
 	return startTestService(serverOptions, nil)
 }

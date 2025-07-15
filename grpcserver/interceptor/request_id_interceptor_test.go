@@ -143,8 +143,8 @@ func (s *RequestIDInterceptorTestSuite) TestRequestIDServerInterceptor() {
 	for _, tt := range tests {
 		s.Run(tt.name, func() {
 			svc, client, closeSvc, err := startTestService([]grpc.ServerOption{
-				grpc.UnaryInterceptor(RequestIDServerUnaryInterceptor(tt.options...)),
-				grpc.StreamInterceptor(RequestIDServerStreamInterceptor(tt.options...)),
+				grpc.UnaryInterceptor(RequestIDUnaryInterceptor(tt.options...)),
+				grpc.StreamInterceptor(RequestIDStreamInterceptor(tt.options...)),
 			}, nil)
 			s.Require().NoError(err)
 			defer func() { s.Require().NoError(closeSvc()) }()

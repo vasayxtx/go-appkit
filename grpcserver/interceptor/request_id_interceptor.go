@@ -19,7 +19,7 @@ const (
 	headerRequestInternalIDKey = "x-int-request-id"
 )
 
-// requestIDOptions represents options for RequestIDServerUnaryInterceptor.
+// requestIDOptions represents options for RequestIDUnaryInterceptor.
 type requestIDOptions struct {
 	GenerateID         func() string
 	GenerateInternalID func() string
@@ -46,9 +46,9 @@ func WithInternalRequestIDGenerator(generator func() string) RequestIDOption {
 	}
 }
 
-// RequestIDServerUnaryInterceptor is a gRPC unary interceptor that extracts the request ID from the incoming context metadata
+// RequestIDUnaryInterceptor is a gRPC unary interceptor that extracts the request ID from the incoming context metadata
 // and attaches it to the context. If the request ID is missing, a new one is generated.
-func RequestIDServerUnaryInterceptor(options ...RequestIDOption) func(
+func RequestIDUnaryInterceptor(options ...RequestIDOption) func(
 	ctx context.Context,
 	req interface{},
 	_ *grpc.UnaryServerInfo,
@@ -90,9 +90,9 @@ func RequestIDServerUnaryInterceptor(options ...RequestIDOption) func(
 	}
 }
 
-// RequestIDServerStreamInterceptor is a gRPC stream interceptor that extracts the request ID from the incoming context metadata
+// RequestIDStreamInterceptor is a gRPC stream interceptor that extracts the request ID from the incoming context metadata
 // and attaches it to the context. If the request ID is missing, a new one is generated.
-func RequestIDServerStreamInterceptor(options ...RequestIDOption) func(
+func RequestIDStreamInterceptor(options ...RequestIDOption) func(
 	srv interface{},
 	ss grpc.ServerStream,
 	_ *grpc.StreamServerInfo,

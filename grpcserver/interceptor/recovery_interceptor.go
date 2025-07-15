@@ -24,7 +24,7 @@ const (
 
 var InternalError = status.Error(codes.Internal, "Internal error")
 
-// recoveryOptions represents options for RecoveryServerUnaryInterceptor.
+// recoveryOptions represents options for RecoveryUnaryInterceptor.
 type recoveryOptions struct {
 	StackSize int
 }
@@ -39,8 +39,8 @@ func WithRecoveryStackSize(size int) RecoveryOption {
 	}
 }
 
-// RecoveryServerUnaryInterceptor is a gRPC unary interceptor that recovers from panics and returns Internal error.
-func RecoveryServerUnaryInterceptor(options ...RecoveryOption) func(
+// RecoveryUnaryInterceptor is a gRPC unary interceptor that recovers from panics and returns Internal error.
+func RecoveryUnaryInterceptor(options ...RecoveryOption) func(
 	ctx context.Context,
 	req interface{},
 	_ *grpc.UnaryServerInfo,
@@ -73,8 +73,8 @@ func RecoveryServerUnaryInterceptor(options ...RecoveryOption) func(
 	}
 }
 
-// RecoveryServerStreamInterceptor is a gRPC stream interceptor that recovers from panics and returns Internal error.
-func RecoveryServerStreamInterceptor(options ...RecoveryOption) func(
+// RecoveryStreamInterceptor is a gRPC stream interceptor that recovers from panics and returns Internal error.
+func RecoveryStreamInterceptor(options ...RecoveryOption) func(
 	srv interface{},
 	ss grpc.ServerStream,
 	_ *grpc.StreamServerInfo,

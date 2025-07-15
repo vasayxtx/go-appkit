@@ -29,11 +29,11 @@ type LoggingInterceptorTestSuite struct {
 	IsUnary bool
 }
 
-func TestLoggingServerUnaryInterceptor(t *testing.T) {
+func TestLoggingUnaryInterceptor(t *testing.T) {
 	suite.Run(t, &LoggingInterceptorTestSuite{IsUnary: true})
 }
 
-func TestLoggingServerStreamInterceptor(t *testing.T) {
+func TestLoggingStreamInterceptor(t *testing.T) {
 	suite.Run(t, &LoggingInterceptorTestSuite{IsUnary: false})
 }
 
@@ -557,15 +557,15 @@ func (s *LoggingInterceptorTestSuite) setupTestService(logger *logtest.Recorder,
 	if s.IsUnary {
 		serverOptions = []grpc.ServerOption{
 			grpc.ChainUnaryInterceptor(
-				RequestIDServerUnaryInterceptor(),
-				LoggingServerUnaryInterceptor(logger, options...),
+				RequestIDUnaryInterceptor(),
+				LoggingUnaryInterceptor(logger, options...),
 			),
 		}
 	} else {
 		serverOptions = []grpc.ServerOption{
 			grpc.ChainStreamInterceptor(
-				RequestIDServerStreamInterceptor(),
-				LoggingServerStreamInterceptor(logger, options...),
+				RequestIDStreamInterceptor(),
+				LoggingStreamInterceptor(logger, options...),
 			),
 		}
 	}

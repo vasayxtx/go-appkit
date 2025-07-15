@@ -243,8 +243,8 @@ func prepareCallMetrics(ctx context.Context, fullMethod string) (
 	return ctx, callInfo, startTime, startTimeGenerated
 }
 
-// MetricsServerUnaryInterceptor is an interceptor that collects metrics for incoming gRPC calls.
-func MetricsServerUnaryInterceptor(
+// MetricsUnaryInterceptor is an interceptor that collects metrics for incoming gRPC calls.
+func MetricsUnaryInterceptor(
 	collector MetricsCollector,
 	opts ...MetricsOption,
 ) grpc.UnaryServerInterceptor {
@@ -270,8 +270,8 @@ func MetricsServerUnaryInterceptor(
 	}
 }
 
-// MetricsServerStreamInterceptor is an interceptor that collects metrics for incoming gRPC stream calls.
-func MetricsServerStreamInterceptor(
+// MetricsStreamInterceptor is an interceptor that collects metrics for incoming gRPC stream calls.
+func MetricsStreamInterceptor(
 	collector MetricsCollector,
 	opts ...MetricsOption,
 ) grpc.StreamServerInterceptor {

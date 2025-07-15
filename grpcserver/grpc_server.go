@@ -139,10 +139,10 @@ func New(cfg *Config, logger log.FieldLogger, options ...Option) (*GRPCServer, e
 	// Build unary interceptors chain
 	unaryInterceptors := []grpc.UnaryServerInterceptor{
 		callStartTimeUnaryInterceptor(),
-		interceptor.RequestIDServerUnaryInterceptor(),
-		interceptor.LoggingServerUnaryInterceptor(logger, loggingOptions...),
-		interceptor.RecoveryServerUnaryInterceptor(),
-		interceptor.MetricsServerUnaryInterceptor(promMetrics),
+		interceptor.RequestIDUnaryInterceptor(),
+		interceptor.LoggingUnaryInterceptor(logger, loggingOptions...),
+		interceptor.RecoveryUnaryInterceptor(),
+		interceptor.MetricsUnaryInterceptor(promMetrics),
 	}
 	unaryInterceptors = append(unaryInterceptors, opts.unaryInterceptors...)
 	if len(unaryInterceptors) > 0 {
@@ -152,10 +152,10 @@ func New(cfg *Config, logger log.FieldLogger, options ...Option) (*GRPCServer, e
 	// Build stream interceptors chain
 	streamInterceptors := []grpc.StreamServerInterceptor{
 		callStartTimeStreamInterceptor(),
-		interceptor.RequestIDServerStreamInterceptor(),
-		interceptor.LoggingServerStreamInterceptor(logger, loggingOptions...),
-		interceptor.RecoveryServerStreamInterceptor(),
-		interceptor.MetricsServerStreamInterceptor(promMetrics),
+		interceptor.RequestIDStreamInterceptor(),
+		interceptor.LoggingStreamInterceptor(logger, loggingOptions...),
+		interceptor.RecoveryStreamInterceptor(),
+		interceptor.MetricsStreamInterceptor(promMetrics),
 	}
 	streamInterceptors = append(streamInterceptors, opts.streamInterceptors...)
 	if len(opts.streamInterceptors) > 0 {

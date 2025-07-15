@@ -58,14 +58,14 @@ func (s *RecoveryInterceptorTestSuite) TestRecoveryServerInterceptorWithStackSiz
 			logger := logtest.NewRecorder()
 
 			chainUnaryInterceptor := grpc.ChainUnaryInterceptor(
-				RequestIDServerUnaryInterceptor(),
-				LoggingServerUnaryInterceptor(logger),
-				RecoveryServerUnaryInterceptor(tt.options...),
+				RequestIDUnaryInterceptor(),
+				LoggingUnaryInterceptor(logger),
+				RecoveryUnaryInterceptor(tt.options...),
 			)
 			chainStreamInterceptor := grpc.ChainStreamInterceptor(
-				RequestIDServerStreamInterceptor(),
-				LoggingServerStreamInterceptor(logger),
-				RecoveryServerStreamInterceptor(tt.options...),
+				RequestIDStreamInterceptor(),
+				LoggingStreamInterceptor(logger),
+				RecoveryStreamInterceptor(tt.options...),
 			)
 			svc, client, closeSvc, err := startTestService(
 				[]grpc.ServerOption{chainUnaryInterceptor, chainStreamInterceptor}, nil)
@@ -108,8 +108,8 @@ func (s *RecoveryInterceptorTestSuite) TestRecoveryServerInterceptorWithStackSiz
 
 func (s *RecoveryInterceptorTestSuite) TestRecoveryServerInterceptorNoLogger() {
 	svc, client, closeSvc, err := startTestService([]grpc.ServerOption{
-		grpc.UnaryInterceptor(RecoveryServerUnaryInterceptor()),
-		grpc.StreamInterceptor(RecoveryServerStreamInterceptor()),
+		grpc.UnaryInterceptor(RecoveryUnaryInterceptor()),
+		grpc.StreamInterceptor(RecoveryStreamInterceptor()),
 	}, nil)
 	s.Require().NoError(err)
 	defer func() { s.Require().NoError(closeSvc()) }()

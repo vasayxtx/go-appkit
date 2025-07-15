@@ -95,8 +95,8 @@ func WithLoggingCustomStreamLoggerProvider(provider CustomStreamLoggerProvider) 
 	}
 }
 
-// LoggingServerUnaryInterceptor is a gRPC unary interceptor that logs the start and end of each RPC call.
-func LoggingServerUnaryInterceptor(logger log.FieldLogger, options ...LoggingOption) func(
+// LoggingUnaryInterceptor is a gRPC unary interceptor that logs the start and end of each RPC call.
+func LoggingUnaryInterceptor(logger log.FieldLogger, options ...LoggingOption) func(
 	ctx context.Context,
 	req interface{},
 	info *grpc.UnaryServerInfo,
@@ -128,8 +128,8 @@ func LoggingServerUnaryInterceptor(logger log.FieldLogger, options ...LoggingOpt
 	}
 }
 
-// LoggingServerStreamInterceptor is a gRPC stream interceptor that logs the start and end of each RPC call.
-func LoggingServerStreamInterceptor(logger log.FieldLogger, options ...LoggingOption) func(
+// LoggingStreamInterceptor is a gRPC stream interceptor that logs the start and end of each RPC call.
+func LoggingStreamInterceptor(logger log.FieldLogger, options ...LoggingOption) func(
 	srv interface{},
 	ss grpc.ServerStream,
 	info *grpc.StreamServerInfo,
