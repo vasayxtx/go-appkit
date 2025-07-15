@@ -258,6 +258,41 @@ func (s *MetricsInterceptorTestSuite) TestMetricsServerInterceptorWithoutUserAge
 	testutil.RequireSamplesCountInHistogram(s.T(), getHist(codes.OK), 1)
 }
 
+func (s *MetricsInterceptorTestSuite) TestMetricsServerInterceptorPanicHandling() {
+	promMetrics := NewPrometheusMetrics()
+
+	svc, client, closeSvc, err := s.createTestServiceWithRecovery(promMetrics)
+	s.Require().NoError(err)
+	defer func() { s.Require().NoError(closeSvc()) }()
+
+	methodName, methodType := s.getMethodNameAndType()
+	getHist := func(code codes.Code) prometheus.Histogram {
+		return promMetrics.Durations.WithLabelValues(
+			"grpc.testing.TestService", methodName, string(methodType), "", code.String()).(prometheus.Histogram)
+	}
+
+	gauge := promMetrics.InFlight.WithLabelValues(
+		"grpc.testing.TestService", methodName, string(methodType), "")
+
+	// Verify initial state
+	testutil.RequireSamplesCountInHistogram(s.T(), getHist(codes.Internal), 0)
+	requireSamplesCountInGauge(s.T(), gauge, 0)
+
+	// Set up handler that panics
+	panicMessage := "test panic"
+	s.switchHandlerThatPanics(svc, panicMessage)
+
+	// Make call that will panic - recovery interceptor will convert panic to Internal error
+	err = s.makeCall(client)
+	s.Require().Error(err)
+	s.Require().ErrorIs(err, InternalError)
+
+	// Verify metrics were recorded with Internal status
+	testutil.RequireSamplesCountInHistogram(s.T(), getHist(codes.Internal), 1)
+	// Verify in-flight counter was decremented
+	requireSamplesCountInGauge(s.T(), gauge, 0)
+}
+
 func (s *MetricsInterceptorTestSuite) createTestService(promMetrics *PrometheusMetrics) (*testService, grpc_testing.TestServiceClient, func() error, error) {
 	return s.createTestServiceWithOptions(promMetrics)
 }
@@ -268,6 +303,22 @@ func (s *MetricsInterceptorTestSuite) createTestServiceWithOptions(promMetrics *
 		serverOptions = []grpc.ServerOption{grpc.UnaryInterceptor(MetricsUnaryInterceptor(promMetrics, options...))}
 	} else {
 		serverOptions = []grpc.ServerOption{grpc.StreamInterceptor(MetricsStreamInterceptor(promMetrics, options...))}
+	}
+	return startTestService(serverOptions, nil)
+}
+
+func (s *MetricsInterceptorTestSuite) createTestServiceWithRecovery(promMetrics *PrometheusMetrics, options ...MetricsOption) (*testService, grpc_testing.TestServiceClient, func() error, error) {
+	var serverOptions []grpc.ServerOption
+	if s.IsUnary {
+		serverOptions = []grpc.ServerOption{grpc.ChainUnaryInterceptor(
+			MetricsUnaryInterceptor(promMetrics, options...),
+			RecoveryUnaryInterceptor(),
+		)}
+	} else {
+		serverOptions = []grpc.ServerOption{grpc.ChainStreamInterceptor(
+			MetricsStreamInterceptor(promMetrics, options...),
+			RecoveryStreamInterceptor(),
+		)}
 	}
 	return startTestService(serverOptions, nil)
 }
@@ -319,6 +370,18 @@ func (s *MetricsInterceptorTestSuite) switchHandlerWithChannels(svc *testService
 			return stream.Send(&grpc_testing.StreamingOutputCallResponse{
 				Payload: &grpc_testing.Payload{Body: []byte("test-stream")},
 			})
+		})
+	}
+}
+
+func (s *MetricsInterceptorTestSuite) switchHandlerThatPanics(svc *testService, panicMessage string) {
+	if s.IsUnary {
+		svc.SwitchUnaryCallHandler(func(ctx context.Context, req *grpc_testing.SimpleRequest) (*grpc_testing.SimpleResponse, error) {
+			panic(panicMessage)
+		})
+	} else {
+		svc.SwitchStreamingOutputCallHandler(func(req *grpc_testing.StreamingOutputCallRequest, stream grpc_testing.TestService_StreamingOutputCallServer) error {
+			panic(panicMessage)
 		})
 	}
 }

@@ -302,8 +302,17 @@ func MetricsUnaryInterceptor(
 		collector.IncInFlightCalls(callInfo, CallMethodTypeUnary)
 		defer collector.DecInFlightCalls(callInfo, CallMethodTypeUnary)
 
-		resp, err := handler(ctx, req)
-		collector.ObserveCallFinish(callInfo, CallMethodTypeUnary, getCodeFromError(err), startTime)
+		var resp interface{}
+		var err error
+		defer func() {
+			if p := recover(); p != nil {
+				collector.ObserveCallFinish(callInfo, CallMethodTypeUnary, codes.Internal, startTime)
+				panic(p)
+			}
+			collector.ObserveCallFinish(callInfo, CallMethodTypeUnary, getCodeFromError(err), startTime)
+		}()
+
+		resp, err = handler(ctx, req)
 		return resp, err
 	}
 }
@@ -342,8 +351,16 @@ func MetricsStreamInterceptor(
 			}
 		}
 
-		err := handler(srv, nextSrvStream)
-		collector.ObserveCallFinish(callInfo, CallMethodTypeStream, getCodeFromError(err), startTime)
+		var err error
+		defer func() {
+			if p := recover(); p != nil {
+				collector.ObserveCallFinish(callInfo, CallMethodTypeStream, codes.Internal, startTime)
+				panic(p)
+			}
+			collector.ObserveCallFinish(callInfo, CallMethodTypeStream, getCodeFromError(err), startTime)
+		}()
+
+		err = handler(srv, nextSrvStream)
 		return err
 	}
 }
