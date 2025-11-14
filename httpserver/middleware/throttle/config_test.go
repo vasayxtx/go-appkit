@@ -385,7 +385,7 @@ func requireTestConfig(t *testing.T, cfg *Config) {
 			},
 			RateLimits:     []RuleRateLimit{{Zone: "rate_limit_identity"}, {Zone: "rate_limit_identity_window"}},
 			InFlightLimits: []RuleInFlightLimit{{Zone: "in_flight_limit_identity"}, {Zone: "in_flight_limit_remote_addr"}},
-			Tags:           []string{"tag1", "tag2"},
+			Tags:           TagsList{"tag1", "tag2"},
 		},
 		{
 			Alias: "limit_batches",
@@ -395,7 +395,7 @@ func requireTestConfig(t *testing.T, cfg *Config) {
 			},
 			RateLimits:     []RuleRateLimit{{Zone: "rate_limit_total"}},
 			InFlightLimits: []RuleInFlightLimit{{Zone: "in_flight_limit_total"}},
-			Tags:           []string{"tag_a", "tag_b"},
+			Tags:           TagsList{"tag_a", "tag_b"},
 		},
 	}, cfg.Rules)
 }
@@ -752,4 +752,63 @@ func mustParseRoutePath(s string) restapi.RoutePath {
 		panic(err)
 	}
 	return rp
+}
+
+func TestConfigWithZoneLevelTags(t *testing.T) {
+	const yamlCfg = `
+rateLimitZones:
+  rl_zone1:
+    rateLimit: 10/s
+    burstLimit: 20
+  rl_zone2:
+    rateLimit: 5/s
+    burstLimit: 10
+
+inFlightLimitZones:
+  ifl_zone1:
+    inFlightLimit: 100
+  ifl_zone2:
+    inFlightLimit: 50
+
+rules:
+  - routes:
+    - path: "/api/test"
+      methods: GET
+    rateLimits:
+      - zone: rl_zone1
+        tags: tag_a, tag_b
+      - zone: rl_zone2
+        tags: tag_c
+    inFlightLimits:
+      - zone: ifl_zone1
+        tags: ["tag_a"]
+      - zone: ifl_zone2
+        tags: "tag_c"
+    tags: rule_tag
+`
+
+	cfgLoader := config.NewLoader(config.NewViperAdapter())
+	cfg := &Config{}
+	err := cfgLoader.LoadFromReader(bytes.NewReader([]byte(yamlCfg)), config.DataTypeYAML, cfg)
+	require.NoError(t, err)
+
+	require.Len(t, cfg.Rules, 1)
+	rule := cfg.Rules[0]
+
+	// Check rule-level tags
+	require.Equal(t, TagsList{"rule_tag"}, rule.Tags)
+
+	// Check rate limit zone-level tags
+	require.Len(t, rule.RateLimits, 2)
+	require.Equal(t, "rl_zone1", rule.RateLimits[0].Zone)
+	require.Equal(t, TagsList{"tag_a", "tag_b"}, rule.RateLimits[0].Tags)
+	require.Equal(t, "rl_zone2", rule.RateLimits[1].Zone)
+	require.Equal(t, TagsList{"tag_c"}, rule.RateLimits[1].Tags)
+
+	// Check in-flight limit zone-level tags
+	require.Len(t, rule.InFlightLimits, 2)
+	require.Equal(t, "ifl_zone1", rule.InFlightLimits[0].Zone)
+	require.Equal(t, TagsList{"tag_a"}, rule.InFlightLimits[0].Tags)
+	require.Equal(t, "ifl_zone2", rule.InFlightLimits[1].Zone)
+	require.Equal(t, TagsList{"tag_c"}, rule.InFlightLimits[1].Tags)
 }

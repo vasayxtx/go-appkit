@@ -142,6 +142,25 @@ func (h *handler) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 	nextHandler.ServeHTTP(rw, r)
 }
 
+// shouldApplyZoneWithTags determines if a zone should be applied based on middleware and zone tags.
+// Returns true if the zone should be applied.
+func shouldApplyZoneWithTags(middlewareTags []string, zoneTags []string) bool {
+	if len(middlewareTags) == 0 && len(zoneTags) == 0 {
+		// Both empty: apply
+		return true
+	}
+	if len(middlewareTags) == 0 && len(zoneTags) > 0 {
+		// Middleware has no tags, zone has tags: don't apply
+		return false
+	}
+	if len(middlewareTags) > 0 && len(zoneTags) == 0 {
+		// Middleware has tags, zone has no tags: don't apply
+		return false
+	}
+	// Both have tags: check if they intersect
+	return throttleconfig.CheckStringSlicesIntersect(middlewareTags, zoneTags)
+}
+
 // nolint: gocyclo // we would like to have high functional cohesion here.
 func makeRoutes(
 	cfg *Config, errDomain string, mc MetricsCollector, opts MiddlewareOpts,
@@ -151,14 +170,54 @@ func makeRoutes(
 			continue
 		}
 
-		if len(opts.Tags) != 0 && !throttleconfig.CheckStringSlicesIntersect(opts.Tags, rule.Tags) {
-			continue
+		// Tag precedence: Rule-level tags take precedence. If they match - apply all zones.
+		// If not - check zone-level tags individually.
+		// ruleLevelTagsMatch is true when:
+		// - Middleware has no tags AND rule has no rule-level tags (both empty => check zones)
+		// - Middleware has tags AND rule has rule-level tags AND they intersect (match => apply all zones)
+		ruleLevelTagsMatch := false
+		if len(opts.Tags) == 0 && len(rule.Tags) == 0 {
+			// Both empty: will check zone-level tags but this is still considered "match" for logic flow
+			ruleLevelTagsMatch = true
+		} else if len(opts.Tags) > 0 && len(rule.Tags) > 0 && throttleconfig.CheckStringSlicesIntersect(opts.Tags, rule.Tags) {
+			// Both non-empty and intersect: apply all zones
+			ruleLevelTagsMatch = true
+		}
+
+		if !ruleLevelTagsMatch {
+			// Rule-level tags don't match. Check if any zone-level tags match.
+			hasMatchingZone := false
+			for i := 0; i < len(rule.InFlightLimits); i++ {
+				if shouldApplyZoneWithTags(opts.Tags, rule.InFlightLimits[i].Tags) {
+					hasMatchingZone = true
+					break
+				}
+			}
+			if !hasMatchingZone {
+				for i := 0; i < len(rule.RateLimits); i++ {
+					if shouldApplyZoneWithTags(opts.Tags, rule.RateLimits[i].Tags) {
+						hasMatchingZone = true
+						break
+					}
+				}
+			}
+			if !hasMatchingZone {
+				continue
+			}
 		}
 
 		var middlewares []func(http.Handler) http.Handler
 
 		// Build in-flight limiting middleware.
 		for i := 0; i < len(rule.InFlightLimits); i++ {
+			// If rule-level tags matched (both empty or both non-empty and intersect), check zone filtering.
+			// When both middleware and rule have no tags, we still check zone-level tags.
+			if ruleLevelTagsMatch && len(opts.Tags) > 0 && len(rule.Tags) > 0 {
+				// Rule-level match with non-empty tags: apply ALL zones
+			} else if !shouldApplyZoneWithTags(opts.Tags, rule.InFlightLimits[i].Tags) {
+				continue
+			}
+
 			zoneName := rule.InFlightLimits[i].Zone
 			cfgZone, ok := cfg.InFlightLimitZones[zoneName]
 			if !ok {
@@ -175,6 +234,14 @@ func makeRoutes(
 
 		// Build rate limiting middleware.
 		for i := 0; i < len(rule.RateLimits); i++ {
+			// If rule-level tags matched (both empty or both non-empty and intersect), check zone filtering.
+			// When both middleware and rule have no tags, we still check zone-level tags.
+			if ruleLevelTagsMatch && len(opts.Tags) > 0 && len(rule.Tags) > 0 {
+				// Rule-level match with non-empty tags: apply ALL zones
+			} else if !shouldApplyZoneWithTags(opts.Tags, rule.RateLimits[i].Tags) {
+				continue
+			}
+
 			zoneName := rule.RateLimits[i].Zone
 			cfgZone, ok := cfg.RateLimitZones[zoneName]
 			if !ok {
@@ -189,11 +256,14 @@ func makeRoutes(
 			middlewares = append(middlewares, rateLimitMw)
 		}
 
-		for _, cfgRoute := range rule.Routes {
-			routes = append(routes, restapi.NewRoute(cfgRoute, nil, middlewares))
-		}
-		for _, exclCfgRoute := range rule.ExcludedRoutes {
-			routes = append(routes, restapi.NewExcludedRoute(exclCfgRoute))
+		// Only add routes if there are any middlewares to apply
+		if len(middlewares) > 0 {
+			for _, cfgRoute := range rule.Routes {
+				routes = append(routes, restapi.NewRoute(cfgRoute, nil, middlewares))
+			}
+			for _, exclCfgRoute := range rule.ExcludedRoutes {
+				routes = append(routes, restapi.NewExcludedRoute(exclCfgRoute))
+			}
 		}
 	}
 

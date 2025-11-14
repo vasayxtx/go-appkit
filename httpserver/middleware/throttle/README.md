@@ -13,7 +13,8 @@ A comprehensive HTTP request throttling middleware with flexible configuration f
 - **Request Backlogging**: Queue requests when limits are reached with configurable timeouts
 - **Dry-Run Mode**: Test throttling configurations without enforcement
 - **Comprehensive Metrics**: Prometheus metrics for monitoring and alerting
-- **Tag-Based Rules**: Apply different throttling rules to different middleware instances
+- **Tag-Based Rules**: Apply different throttling rules to different middleware instances with support for both rule-level and zone-level tags
+- **Zone-Level Tags**: Apply different throttling zones on the same routes based on middleware stage (e.g., before/after authentication)
 - **Key Filtering**: Include/exclude specific keys with glob pattern support
 - **Auto Retry-After**: Automatic calculation of retry intervals for rate limits
 
@@ -209,7 +210,27 @@ The package collects several metrics in the Prometheus format:
 
 ## Tags
 
-Tags are useful when different rules of the same configuration should be used by different middlewares. For example, suppose you want to have two different throttling rules:
+Tags are useful when different rules of the same configuration should be used by different middlewares. Tags can be specified at two levels:
+
+1. **Rule-level tags**: Applied to the entire rule, affecting all zones within it
+2. **Zone-level tags**: Applied to individual rate limit or in-flight limit zones
+
+### Tag Precedence
+
+When both rule-level and zone-level tags are specified, the following precedence rules apply:
+
+- **Rule-level tags take precedence**: If a middleware's tags match the rule-level tags, ALL zones in that rule are applied, regardless of their individual zone-level tags.
+- **Zone-level fallback**: If rule-level tags don't match (or aren't specified), the middleware checks each zone's tags individually. Only zones with matching tags are applied.
+- **No tags**: If a middleware doesn't specify any tags, only rules and zones without tags are applied.
+
+This allows you to:
+- Share the same route configuration across different interceptors/middlewares
+- Apply different zones based on the processing stage (e.g., before vs. after authentication)
+- Avoid configuration duplication
+
+### Rule-Level Tags Example
+
+For example, suppose you want to have two different throttling rules:
 
  1. A rule for all requests.
  2. A rule for all identity-aware (authorized) requests.
@@ -246,6 +267,106 @@ In your code, you will have two middlewares that will be executed at different s
 allMw := MiddlewareWithOpts(cfg, "my-app-domain", throttleMetrics, MiddlewareOpts{Tags: []string{"all_reqs"}})
 requireAuthMw := MiddlewareWithOpts(cfg, "my-app-domain", throttleMetrics, MiddlewareOpts{Tags: []string{"require_auth_reqs"}})
 ```
+
+### Zone-Level Tags Example
+
+Zone-level tags allow you to apply different zones to the same route based on the middleware being used, without duplicating route configuration:
+
+```yaml
+rateLimitZones:
+  rl_global:
+    rateLimit: 1000/s
+    burstLimit: 2000
+    responseStatusCode: 503
+    responseRetryAfter: 5s
+  
+  rl_identity:
+    rateLimit: 50/s
+    burstLimit: 100
+    responseStatusCode: 429
+    responseRetryAfter: auto
+    key:
+      type: identity
+    maxKeys: 50000
+
+inFlightLimitZones:
+  ifl_global:
+    inFlightLimit: 5000
+    responseStatusCode: 503
+  
+  ifl_identity:
+    inFlightLimit: 64
+    backlogLimit: 128
+    backlogTimeout: 30s
+    responseStatusCode: 429
+    key:
+      type: identity
+    maxKeys: 50000
+
+rules:
+  - routes:
+    - path: "/api/v1/users"
+      methods: [GET, POST, PUT, DELETE]
+    rateLimits:
+      - zone: rl_global
+        tags: all_requests
+      - zone: rl_identity
+        tags: authenticated
+    inFlightLimits:
+      - zone: ifl_global
+        tags: all_requests
+      - zone: ifl_identity
+        tags: authenticated
+```
+
+With this configuration, you can have two middlewares:
+
+```go
+// Early middleware - applies global throttling to all requests
+allRequestsMw := MiddlewareWithOpts(cfg, "my-app-domain", throttleMetrics, 
+    MiddlewareOpts{Tags: []string{"all_requests"}})
+
+// Later middleware - applies per-identity throttling after authentication
+authenticatedMw := MiddlewareWithOpts(cfg, "my-app-domain", throttleMetrics, 
+    MiddlewareOpts{
+        Tags: []string{"authenticated"},
+        GetKeyIdentity: func(r *http.Request) (string, bool, error) {
+            // Extract user ID from request context after authentication
+            return getUserIDFromContext(r.Context())
+        },
+    })
+```
+
+### Complex Tag Scenarios
+
+You can mix rule-level and zone-level tags for maximum flexibility:
+
+```yaml
+rules:
+  - routes:
+    - path: "/api/v1/public/*"
+    rateLimits:
+      - zone: rl_global
+        tags: early_stage
+      - zone: rl_identity  
+        tags: late_stage
+    tags: public_endpoints  # Rule-level tag
+  
+  - routes:
+    - path: "/api/v1/admin/*"
+    rateLimits:
+      - zone: rl_admin_global
+        tags: early_stage
+      - zone: rl_admin_identity
+        tags: late_stage
+    tags: admin_endpoints  # Rule-level tag
+```
+
+With this configuration:
+- A middleware with tag `public_endpoints` will apply both zones to public routes
+- A middleware with tag `early_stage` will apply only `rl_global` and `rl_admin_global` zones
+- A middleware with tag `late_stage` will apply only `rl_identity` and `rl_admin_identity` zones
+- A middleware with tags `["public_endpoints", "early_stage"]` will apply both zones to public routes (rule-level precedence)
 
 ## Dry-run mode
 
