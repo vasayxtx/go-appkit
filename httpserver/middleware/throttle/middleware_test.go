@@ -882,3 +882,230 @@ func waitSend(ch chan struct{}, timeout time.Duration) error {
 	}
 	return nil
 }
+
+func TestZoneLevelTags(t *testing.T) {
+	configLoader := config.NewLoader(config.NewViperAdapter())
+
+	t.Run("zone-level tags allow selective zone application", func(t *testing.T) {
+		cfgData := `
+rateLimitZones:
+  rl_zone_1:
+    rateLimit: 1/m
+    burstLimit: 5
+    responseStatusCode: 503
+    responseRetryAfter: 5s
+  rl_zone_2:
+    rateLimit: 1/m
+    burstLimit: 10
+    responseStatusCode: 503
+    responseRetryAfter: 5s
+
+rules:
+  - routes:
+    - path: "/test"
+      methods: GET
+    rateLimits:
+      - zone: rl_zone_1
+        tags: tag_a
+      - zone: rl_zone_2
+        tags: tag_b
+`
+		cfg := &Config{}
+		require.NoError(t, configLoader.LoadFromReader(bytes.NewReader([]byte(cfgData)), config.DataTypeYAML, cfg))
+
+		// Middleware with tag_a should only apply rl_zone_1 (burst 5)
+		reqsGen := makeReqsGenerator([]string{"GET /test"})
+		checkRateLimiting(t, cfg, reqsGen, 6, 20, 503, time.Second*5, "tag_a")
+
+		// Middleware with tag_b should only apply rl_zone_2 (burst 10)
+		reqsGen = makeReqsGenerator([]string{"GET /test"})
+		checkRateLimiting(t, cfg, reqsGen, 11, 20, 503, time.Second*5, "tag_b")
+	})
+
+	t.Run("zone-level tags with in-flight limits", func(t *testing.T) {
+		cfgData := `
+inFlightLimitZones:
+  ifl_zone_1:
+    inFlightLimit: 5
+    responseStatusCode: 503
+    responseRetryAfter: 30s
+  ifl_zone_2:
+    inFlightLimit: 10
+    responseStatusCode: 503
+    responseRetryAfter: 30s
+
+rules:
+  - routes:
+    - path: "/test"
+      methods: GET
+    inFlightLimits:
+      - zone: ifl_zone_1
+        tags: tag_a
+      - zone: ifl_zone_2
+        tags: tag_b
+`
+		cfg := &Config{}
+		require.NoError(t, configLoader.LoadFromReader(bytes.NewReader([]byte(cfgData)), config.DataTypeYAML, cfg))
+
+		// Middleware with tag_a should only apply ifl_zone_1 (limit 5)
+		reqsGen := makeReqsGenerator([]string{"GET /test"})
+		checkInFlightLimiting(t, cfg, checkInFlightLimitingParams{
+			reqsGen:        reqsGen,
+			totalLimit:     5,
+			reqsNum:        15,
+			unblockDelay:   time.Millisecond * 100,
+			wantRespCode:   503,
+			wantRetryAfter: time.Second * 30,
+			tags:           []string{"tag_a"},
+		})
+
+		// Middleware with tag_b should only apply ifl_zone_2 (limit 10)
+		reqsGen = makeReqsGenerator([]string{"GET /test"})
+		checkInFlightLimiting(t, cfg, checkInFlightLimitingParams{
+			reqsGen:        reqsGen,
+			totalLimit:     10,
+			reqsNum:        20,
+			unblockDelay:   time.Millisecond * 100,
+			wantRespCode:   503,
+			wantRetryAfter: time.Second * 30,
+			tags:           []string{"tag_b"},
+		})
+	})
+
+	t.Run("rule-level tags take precedence over zone-level tags", func(t *testing.T) {
+		cfgData := `
+rateLimitZones:
+  rl_zone_1:
+    rateLimit: 1/m
+    burstLimit: 5
+    responseStatusCode: 503
+    responseRetryAfter: 5s
+  rl_zone_2:
+    rateLimit: 1/m
+    burstLimit: 10
+    responseStatusCode: 503
+    responseRetryAfter: 5s
+
+rules:
+  - routes:
+    - path: "/test"
+      methods: GET
+    tags: rule_tag
+    rateLimits:
+      - zone: rl_zone_1
+        tags: zone_tag_a
+      - zone: rl_zone_2
+        tags: zone_tag_b
+`
+		cfg := &Config{}
+		require.NoError(t, configLoader.LoadFromReader(bytes.NewReader([]byte(cfgData)), config.DataTypeYAML, cfg))
+
+		// Middleware with rule_tag should apply BOTH zones (rule-level match applies all zones)
+		// Combined burst: 5 + 10 = 15, but rate limiting works per zone, so effectively burst of min(5,10) = 5
+		reqsGen := makeReqsGenerator([]string{"GET /test"})
+		checkRateLimiting(t, cfg, reqsGen, 6, 20, 503, time.Second*5, "rule_tag")
+
+		// Middleware with zone_tag_a should NOT match (rule tags don't match)
+		reqsGen = makeReqsGenerator([]string{"GET /test"})
+		checkNoRateLimiting(t, cfg, reqsGen, 20, "zone_tag_a")
+	})
+
+	t.Run("empty rule tags allow zone-level tag filtering", func(t *testing.T) {
+		cfgData := `
+rateLimitZones:
+  rl_zone_1:
+    rateLimit: 1/m
+    burstLimit: 5
+    responseStatusCode: 503
+    responseRetryAfter: 5s
+  rl_zone_2:
+    rateLimit: 1/m
+    burstLimit: 10
+    responseStatusCode: 503
+    responseRetryAfter: 5s
+
+rules:
+  - routes:
+    - path: "/test"
+      methods: GET
+    rateLimits:
+      - zone: rl_zone_1
+        tags: tag_a
+      - zone: rl_zone_2
+        tags: tag_b
+`
+		cfg := &Config{}
+		require.NoError(t, configLoader.LoadFromReader(bytes.NewReader([]byte(cfgData)), config.DataTypeYAML, cfg))
+
+		// When rule has no tags, zone-level tags are checked individually
+		reqsGen := makeReqsGenerator([]string{"GET /test"})
+		checkRateLimiting(t, cfg, reqsGen, 6, 20, 503, time.Second*5, "tag_a")
+	})
+
+	t.Run("mixed zones with and without tags", func(t *testing.T) {
+		cfgData := `
+rateLimitZones:
+  rl_zone_1:
+    rateLimit: 1/m
+    burstLimit: 5
+    responseStatusCode: 503
+    responseRetryAfter: 5s
+  rl_zone_2:
+    rateLimit: 1/m
+    burstLimit: 10
+    responseStatusCode: 503
+    responseRetryAfter: 5s
+
+rules:
+  - routes:
+    - path: "/test"
+      methods: GET
+    rateLimits:
+      - zone: rl_zone_1
+        tags: tag_a
+      - zone: rl_zone_2
+`
+		cfg := &Config{}
+		require.NoError(t, configLoader.LoadFromReader(bytes.NewReader([]byte(cfgData)), config.DataTypeYAML, cfg))
+
+		// Middleware with tag_a should apply both zones (zone_1 matches tag, zone_2 has no tags)
+		// This applies the more restrictive burst limit of 5
+		reqsGen := makeReqsGenerator([]string{"GET /test"})
+		checkRateLimiting(t, cfg, reqsGen, 6, 20, 503, time.Second*5, "tag_a")
+
+		// Middleware with tag_b should only apply rl_zone_2 (no tags, so always applies)
+		reqsGen = makeReqsGenerator([]string{"GET /test"})
+		checkRateLimiting(t, cfg, reqsGen, 11, 20, 503, time.Second*5, "tag_b")
+	})
+
+	t.Run("no tags on middleware applies all zones without tags", func(t *testing.T) {
+		cfgData := `
+rateLimitZones:
+  rl_zone_1:
+    rateLimit: 1/m
+    burstLimit: 5
+    responseStatusCode: 503
+    responseRetryAfter: 5s
+  rl_zone_2:
+    rateLimit: 1/m
+    burstLimit: 10
+    responseStatusCode: 503
+    responseRetryAfter: 5s
+
+rules:
+  - routes:
+    - path: "/test"
+      methods: GET
+    rateLimits:
+      - zone: rl_zone_1
+        tags: tag_a
+      - zone: rl_zone_2
+`
+		cfg := &Config{}
+		require.NoError(t, configLoader.LoadFromReader(bytes.NewReader([]byte(cfgData)), config.DataTypeYAML, cfg))
+
+		// Middleware without tags should only apply zones without tags (rl_zone_2)
+		reqsGen := makeReqsGenerator([]string{"GET /test"})
+		checkRateLimiting(t, cfg, reqsGen, 11, 20, 503, time.Second*5)
+	})
+}

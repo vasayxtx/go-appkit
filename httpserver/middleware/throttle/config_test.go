@@ -753,3 +753,168 @@ func mustParseRoutePath(s string) restapi.RoutePath {
 	}
 	return rp
 }
+
+func TestConfig_ZoneLevelTags(t *testing.T) {
+	const yamlCfgWithZoneTags = `
+rateLimitZones:
+  rl_zone_1:
+    rateLimit: 100/s
+    burstLimit: 200
+    responseStatusCode: 429
+  rl_zone_2:
+    rateLimit: 50/s
+    burstLimit: 100
+    responseStatusCode: 429
+
+inFlightLimitZones:
+  ifl_zone_1:
+    inFlightLimit: 50
+    responseStatusCode: 503
+  ifl_zone_2:
+    inFlightLimit: 100
+    responseStatusCode: 503
+
+rules:
+  - routes:
+      - path: /api/v1/resource
+        methods: GET
+    rateLimits:
+      - zone: rl_zone_1
+        tags: [tag_a, tag_b]
+      - zone: rl_zone_2
+        tags: tag_c
+    inFlightLimits:
+      - zone: ifl_zone_1
+        tags: tag_a
+      - zone: ifl_zone_2
+    alias: resource_rule
+`
+
+	const jsonCfgWithZoneTags = `
+{
+  "rateLimitZones": {
+    "rl_zone_1": {
+      "rateLimit": "100/s",
+      "burstLimit": 200,
+      "responseStatusCode": 429
+    },
+    "rl_zone_2": {
+      "rateLimit": "50/s",
+      "burstLimit": 100,
+      "responseStatusCode": 429
+    }
+  },
+  "inFlightLimitZones": {
+    "ifl_zone_1": {
+      "inFlightLimit": 50,
+      "responseStatusCode": 503
+    },
+    "ifl_zone_2": {
+      "inFlightLimit": 100,
+      "responseStatusCode": 503
+    }
+  },
+  "rules": [
+    {
+      "routes": [
+        {
+          "path": "/api/v1/resource",
+          "methods": "GET"
+        }
+      ],
+      "rateLimits": [
+        {
+          "zone": "rl_zone_1",
+          "tags": ["tag_a", "tag_b"]
+        },
+        {
+          "zone": "rl_zone_2",
+          "tags": "tag_c"
+        }
+      ],
+      "inFlightLimits": [
+        {
+          "zone": "ifl_zone_1",
+          "tags": "tag_a"
+        },
+        {
+          "zone": "ifl_zone_2"
+        }
+      ],
+      "alias": "resource_rule"
+    }
+  ]
+}
+`
+
+	requireConfigWithZoneTags := func(t *testing.T, cfg *Config) {
+		require.Len(t, cfg.Rules, 1)
+		rule := cfg.Rules[0]
+		require.Equal(t, "resource_rule", rule.Alias)
+
+		// Check rate limit zones with tags
+		require.Len(t, rule.RateLimits, 2)
+		require.Equal(t, "rl_zone_1", rule.RateLimits[0].Zone)
+		require.Equal(t, []string{"tag_a", "tag_b"}, []string(rule.RateLimits[0].Tags))
+		require.Equal(t, "rl_zone_2", rule.RateLimits[1].Zone)
+		require.Equal(t, []string{"tag_c"}, []string(rule.RateLimits[1].Tags))
+
+		// Check in-flight limit zones with tags
+		require.Len(t, rule.InFlightLimits, 2)
+		require.Equal(t, "ifl_zone_1", rule.InFlightLimits[0].Zone)
+		require.Equal(t, []string{"tag_a"}, []string(rule.InFlightLimits[0].Tags))
+		require.Equal(t, "ifl_zone_2", rule.InFlightLimits[1].Zone)
+		require.Empty(t, rule.InFlightLimits[1].Tags)
+	}
+
+	tests := []struct {
+		name        string
+		cfgDataType config.DataType
+		cfgData     string
+	}{
+		{
+			name:        "yaml config with zone-level tags",
+			cfgDataType: config.DataTypeYAML,
+			cfgData:     yamlCfgWithZoneTags,
+		},
+		{
+			name:        "json config with zone-level tags",
+			cfgDataType: config.DataTypeJSON,
+			cfgData:     jsonCfgWithZoneTags,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Load config using config.Loader.
+			cfg := NewConfig()
+			cfgLoader := config.NewLoader(config.NewViperAdapter())
+			err := cfgLoader.LoadFromReader(bytes.NewBuffer([]byte(tt.cfgData)), tt.cfgDataType, cfg)
+			require.NoError(t, err)
+			requireConfigWithZoneTags(t, cfg)
+
+			// Load config using viper unmarshal.
+			cfg = NewConfig()
+			vpr := viper.New()
+			vpr.SetConfigType(string(tt.cfgDataType))
+			require.NoError(t, vpr.ReadConfig(bytes.NewBuffer([]byte(tt.cfgData))))
+			require.NoError(t, vpr.Unmarshal(&cfg, func(decoderConfig *mapstructure.DecoderConfig) {
+				decoderConfig.DecodeHook = MapstructureDecodeHook()
+			}))
+			requireConfigWithZoneTags(t, cfg)
+
+			// Load config using yaml/json unmarshal.
+			cfg = NewConfig()
+			switch tt.cfgDataType {
+			case config.DataTypeYAML:
+				require.NoError(t, yaml.Unmarshal([]byte(tt.cfgData), &cfg))
+				requireConfigWithZoneTags(t, cfg)
+			case config.DataTypeJSON:
+				require.NoError(t, json.Unmarshal([]byte(tt.cfgData), &cfg))
+				requireConfigWithZoneTags(t, cfg)
+			default:
+				t.Fatalf("unsupported config data type: %s", tt.cfgDataType)
+			}
+		})
+	}
+}

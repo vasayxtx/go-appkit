@@ -214,6 +214,10 @@ Tags are useful when different rules of the same configuration should be used by
  1. A rule for all requests.
  2. A rule for all identity-aware (authorized) requests.
 
+### Rule-Level Tags
+
+Rule-level tags allow you to control which entire rules are applied by which middleware instances:
+
 ```yaml
 # ...
 rules:
@@ -246,6 +250,91 @@ In your code, you will have two middlewares that will be executed at different s
 allMw := MiddlewareWithOpts(cfg, "my-app-domain", throttleMetrics, MiddlewareOpts{Tags: []string{"all_reqs"}})
 requireAuthMw := MiddlewareWithOpts(cfg, "my-app-domain", throttleMetrics, MiddlewareOpts{Tags: []string{"require_auth_reqs"}})
 ```
+
+### Zone-Level Tags
+
+Zone-level tags provide finer-grained control, allowing you to selectively apply specific zones within a rule to different middleware instances. This is particularly useful when you want to avoid duplicating rules and instead apply different zones on the same routes.
+
+```yaml
+rateLimitZones:
+  rl_all_requests:
+    rateLimit: 1000/s
+    burstLimit: 2000
+    responseStatusCode: 503
+  
+  rl_authenticated:
+    rateLimit: 100/s
+    burstLimit: 200
+    responseStatusCode: 429
+    key:
+      type: identity
+    maxKeys: 10000
+
+inFlightLimitZones:
+  ifl_all_requests:
+    inFlightLimit: 500
+    responseStatusCode: 503
+  
+  ifl_authenticated:
+    inFlightLimit: 50
+    responseStatusCode: 429
+    key:
+      type: identity
+    maxKeys: 10000
+
+rules:
+  - routes:
+    - path: "/api/v1"
+    rateLimits:
+      - zone: rl_all_requests
+        tags: all_reqs
+      - zone: rl_authenticated
+        tags: auth_reqs
+    inFlightLimits:
+      - zone: ifl_all_requests
+        tags: all_reqs
+      - zone: ifl_authenticated
+        tags: auth_reqs
+    alias: api_v1_routes
+```
+
+With this configuration:
+- The middleware with `Tags: []string{"all_reqs"}` will only apply `rl_all_requests` and `ifl_all_requests` zones
+- The middleware with `Tags: []string{"auth_reqs"}` will only apply `rl_authenticated` and `ifl_authenticated` zones
+
+This allows different interceptors/middlewares to apply different zones on the same routes without duplicating the rule configuration.
+
+### Tag Precedence
+
+When both rule-level and zone-level tags are present, the following precedence rules apply:
+
+1. **Rule-level tags take precedence**: If a rule has tags and they match the middleware tags, **all zones in that rule are applied**, regardless of zone-level tags.
+
+2. **Rule tags don't match**: If a rule has tags but they don't match the middleware tags, the entire rule is skipped (zone-level tags are not checked).
+
+3. **Rule has no tags**: If a rule has no tags, zone-level tags are checked individually for each zone. Only zones whose tags match (or zones without tags) are applied.
+
+4. **Middleware without tags**: If the middleware has no tags and zones have tags, only zones without tags are applied.
+
+Example demonstrating precedence:
+
+```yaml
+rules:
+  - routes:
+    - path: "/priority"
+    tags: priority_rule  # Rule-level tag
+    rateLimits:
+      - zone: rl_zone1
+        tags: zone_tag_a  # Zone-level tag (ignored if rule tags match)
+      - zone: rl_zone2
+        tags: zone_tag_b  # Zone-level tag (ignored if rule tags match)
+```
+
+With middleware `Tags: []string{"priority_rule"}`, **both** `rl_zone1` and `rl_zone2` will be applied because the rule-level tag matches, even though the zone-level tags don't match.
+
+With middleware `Tags: []string{"zone_tag_a"}`, **neither** zone will be applied because the rule-level tag doesn't match (the middleware never gets to checking zone tags).
+
+
 
 ## Dry-run mode
 

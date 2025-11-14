@@ -151,7 +151,12 @@ func makeRoutes(
 			continue
 		}
 
-		if len(opts.Tags) != 0 && !throttleconfig.CheckStringSlicesIntersect(opts.Tags, rule.Tags) {
+		// Determine if rule-level tags matched
+		ruleTagsMatched := len(rule.Tags) != 0 && len(opts.Tags) != 0 && throttleconfig.CheckStringSlicesIntersect(opts.Tags, rule.Tags)
+		ruleHasTags := len(rule.Tags) != 0
+
+		// If middleware has tags and rule has tags but they don't match, skip the entire rule
+		if len(opts.Tags) != 0 && ruleHasTags && !ruleTagsMatched {
 			continue
 		}
 
@@ -160,6 +165,21 @@ func makeRoutes(
 		// Build in-flight limiting middleware.
 		for i := 0; i < len(rule.InFlightLimits); i++ {
 			zoneName := rule.InFlightLimits[i].Zone
+			zoneTags := rule.InFlightLimits[i].Tags
+
+			// If rule-level tags matched, apply all zones (ignore zone tags)
+			// If rule has no tags, check zone-level tags individually:
+			// - If middleware has tags and zone has tags, they must intersect
+			// - If middleware has no tags and zone has tags, skip zone
+			if !ruleTagsMatched {
+				if len(opts.Tags) != 0 && len(zoneTags) != 0 && !throttleconfig.CheckStringSlicesIntersect(opts.Tags, zoneTags) {
+					continue
+				}
+				if len(opts.Tags) == 0 && len(zoneTags) != 0 {
+					continue
+				}
+			}
+
 			cfgZone, ok := cfg.InFlightLimitZones[zoneName]
 			if !ok {
 				return nil, fmt.Errorf("in-flight zone %q is not defined", zoneName)
@@ -176,6 +196,21 @@ func makeRoutes(
 		// Build rate limiting middleware.
 		for i := 0; i < len(rule.RateLimits); i++ {
 			zoneName := rule.RateLimits[i].Zone
+			zoneTags := rule.RateLimits[i].Tags
+
+			// If rule-level tags matched, apply all zones (ignore zone tags)
+			// If rule has no tags, check zone-level tags individually:
+			// - If middleware has tags and zone has tags, they must intersect
+			// - If middleware has no tags and zone has tags, skip zone
+			if !ruleTagsMatched {
+				if len(opts.Tags) != 0 && len(zoneTags) != 0 && !throttleconfig.CheckStringSlicesIntersect(opts.Tags, zoneTags) {
+					continue
+				}
+				if len(opts.Tags) == 0 && len(zoneTags) != 0 {
+					continue
+				}
+			}
+
 			cfgZone, ok := cfg.RateLimitZones[zoneName]
 			if !ok {
 				return nil, fmt.Errorf("rate limit zone %q is not defined", zoneName)
@@ -187,6 +222,11 @@ func makeRoutes(
 				return nil, fmt.Errorf("make rate limit middleware for zone %q: %w", zoneName, err)
 			}
 			middlewares = append(middlewares, rateLimitMw)
+		}
+
+		// Only add routes if at least one middleware was created.
+		if len(middlewares) == 0 {
+			continue
 		}
 
 		for _, cfgRoute := range rule.Routes {
