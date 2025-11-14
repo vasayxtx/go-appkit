@@ -550,6 +550,226 @@ rules:
 				checkNoRateLimiting(t, cfg, reqsMismatchGen, 30, "tag_a")
 			},
 		},
+		{
+			Name: "zone-level tags - rate limiting",
+			CfgData: `
+rateLimitZones:
+  rl_zone_1:
+    rateLimit: 1/m
+    burstLimit: 5
+    responseStatusCode: 503
+    responseRetryAfter: 5s
+  rl_zone_2:
+    rateLimit: 1/m
+    burstLimit: 10
+    responseStatusCode: 503
+    responseRetryAfter: 5s
+rules:
+  - routes:
+    - path: "/aaa"
+      methods: POST,PUT,DELETE
+    rateLimits:
+      - zone: rl_zone_1
+        tags: zone_tag_a
+      - zone: rl_zone_2
+        tags: zone_tag_b
+`,
+			Func: func(t *testing.T, cfg *Config) {
+				reqsGen := makeReqsGenerator(matchedPrefixedRoutes)
+
+				// No filter tags - all zones should be applied (both rl_zone_1 and rl_zone_2).
+				// Since both zones limit, the most restrictive (rl_zone_1 with burst=5) applies.
+				checkRateLimiting(t, cfg, reqsGen, 5+1, 30, 503, time.Second*5)
+
+				// Filter tags match zone_tag_a - only rl_zone_1 should be applied.
+				checkRateLimiting(t, cfg, reqsGen, 5+1, 30, 503, time.Second*5, "zone_tag_a")
+
+				// Filter tags match zone_tag_b - only rl_zone_2 should be applied.
+				checkRateLimiting(t, cfg, reqsGen, 10+1, 30, 503, time.Second*5, "zone_tag_b")
+
+				// Filter tags don't match any zone tags - no throttling.
+				checkNoRateLimiting(t, cfg, reqsGen, 30, "zone_tag_c")
+			},
+		},
+		{
+			Name: "zone-level tags - in-flight limiting",
+			CfgData: `
+inFlightLimitZones:
+  ifl_zone_1:
+    inFlightLimit: 3
+    responseStatusCode: 503
+    responseRetryAfter: 1m
+  ifl_zone_2:
+    inFlightLimit: 5
+    responseStatusCode: 503
+    responseRetryAfter: 1m
+rules:
+  - routes:
+    - path: "/aaa"
+      methods: POST,PUT,DELETE
+    inFlightLimits:
+      - zone: ifl_zone_1
+        tags: zone_tag_a
+      - zone: ifl_zone_2
+        tags: zone_tag_b
+`,
+			Func: func(t *testing.T, cfg *Config) {
+				reqsGen := makeReqsGenerator(matchedPrefixedRoutes)
+
+				// No filter tags - all zones should be applied.
+				// The most restrictive limit (ifl_zone_1 with limit=3) applies.
+				checkInFlightLimiting(t, cfg, checkInFlightLimitingParams{
+					reqsGen:        reqsGen,
+					totalLimit:     3,
+					reqsNum:        10,
+					unblockDelay:   time.Second,
+					wantRespCode:   503,
+					wantRetryAfter: time.Minute,
+				})
+
+				// Filter tags match zone_tag_a - only ifl_zone_1 should be applied.
+				checkInFlightLimiting(t, cfg, checkInFlightLimitingParams{
+					reqsGen:        reqsGen,
+					totalLimit:     3,
+					reqsNum:        10,
+					unblockDelay:   time.Second,
+					wantRespCode:   503,
+					wantRetryAfter: time.Minute,
+					tags:           []string{"zone_tag_a"},
+				})
+
+				// Filter tags match zone_tag_b - only ifl_zone_2 should be applied.
+				checkInFlightLimiting(t, cfg, checkInFlightLimitingParams{
+					reqsGen:        reqsGen,
+					totalLimit:     5,
+					reqsNum:        10,
+					unblockDelay:   time.Second,
+					wantRespCode:   503,
+					wantRetryAfter: time.Minute,
+					tags:           []string{"zone_tag_b"},
+				})
+
+				// Filter tags don't match any zone tags - no throttling.
+				checkNoInFlightLimiting(t, cfg, reqsGen, 30, time.Second, "zone_tag_c")
+			},
+		},
+		{
+			Name: "zone-level tags - precedence: rule-level tags take priority",
+			CfgData: `
+rateLimitZones:
+  rl_zone_1:
+    rateLimit: 1/m
+    burstLimit: 5
+    responseStatusCode: 503
+    responseRetryAfter: 5s
+  rl_zone_2:
+    rateLimit: 1/m
+    burstLimit: 10
+    responseStatusCode: 503
+    responseRetryAfter: 5s
+rules:
+  - routes:
+    - path: "/aaa"
+      methods: POST,PUT,DELETE
+    rateLimits:
+      - zone: rl_zone_1
+        tags: zone_tag_a
+      - zone: rl_zone_2
+        tags: zone_tag_b
+    tags: rule_tag_a,rule_tag_b
+`,
+			Func: func(t *testing.T, cfg *Config) {
+				reqsGen := makeReqsGenerator(matchedPrefixedRoutes)
+
+				// Filter tags match rule-level tags - all zones should be applied regardless of zone tags.
+				checkRateLimiting(t, cfg, reqsGen, 5+1, 30, 503, time.Second*5, "rule_tag_a")
+				checkRateLimiting(t, cfg, reqsGen, 5+1, 30, 503, time.Second*5, "rule_tag_b")
+
+				// Filter tags match both rule-level and zone-level tags - all zones still applied.
+				checkRateLimiting(t, cfg, reqsGen, 5+1, 30, 503, time.Second*5, "rule_tag_a", "zone_tag_a")
+
+				// Filter tags match only zone-level tags but not rule-level tags - only matching zones applied.
+				checkRateLimiting(t, cfg, reqsGen, 5+1, 30, 503, time.Second*5, "zone_tag_a")
+				checkRateLimiting(t, cfg, reqsGen, 10+1, 30, 503, time.Second*5, "zone_tag_b")
+
+				// Filter tags don't match either rule-level or zone-level tags - no throttling.
+				checkNoRateLimiting(t, cfg, reqsGen, 30, "other_tag")
+			},
+		},
+		{
+			Name: "zone-level tags - mixed: some zones with tags, some without",
+			CfgData: `
+rateLimitZones:
+  rl_zone_1:
+    rateLimit: 1/m
+    burstLimit: 5
+    responseStatusCode: 503
+    responseRetryAfter: 5s
+  rl_zone_2:
+    rateLimit: 1/m
+    burstLimit: 10
+    responseStatusCode: 503
+    responseRetryAfter: 5s
+  rl_zone_3:
+    rateLimit: 1/m
+    burstLimit: 15
+    responseStatusCode: 503
+    responseRetryAfter: 5s
+rules:
+  - routes:
+    - path: "/aaa"
+      methods: POST,PUT,DELETE
+    rateLimits:
+      - zone: rl_zone_1
+        tags: zone_tag_a
+      - zone: rl_zone_2
+        # No tags on this zone
+      - zone: rl_zone_3
+        tags: zone_tag_b
+`,
+			Func: func(t *testing.T, cfg *Config) {
+				reqsGen := makeReqsGenerator(matchedPrefixedRoutes)
+
+				// No filter tags - all zones should be applied.
+				checkRateLimiting(t, cfg, reqsGen, 5+1, 30, 503, time.Second*5)
+
+				// Filter tags match zone_tag_a - only rl_zone_1 should be applied (rl_zone_2 has no tags, so doesn't match).
+				checkRateLimiting(t, cfg, reqsGen, 5+1, 30, 503, time.Second*5, "zone_tag_a")
+
+				// Filter tags match zone_tag_b - only rl_zone_3 should be applied.
+				checkRateLimiting(t, cfg, reqsGen, 15+1, 30, 503, time.Second*5, "zone_tag_b")
+
+				// Filter tags don't match any zone tags (rl_zone_2 has no tags, so also doesn't match) - no throttling.
+				checkNoRateLimiting(t, cfg, reqsGen, 30, "other_tag")
+			},
+		},
+		{
+			Name: "zone-level tags - empty tags on zone",
+			CfgData: `
+rateLimitZones:
+  rl_zone_1:
+    rateLimit: 1/m
+    burstLimit: 5
+    responseStatusCode: 503
+    responseRetryAfter: 5s
+rules:
+  - routes:
+    - path: "/aaa"
+      methods: POST,PUT,DELETE
+    rateLimits:
+      - zone: rl_zone_1
+        tags: ""
+`,
+			Func: func(t *testing.T, cfg *Config) {
+				reqsGen := makeReqsGenerator(matchedPrefixedRoutes)
+
+				// No filter tags - zone should be applied.
+				checkRateLimiting(t, cfg, reqsGen, 5+1, 30, 503, time.Second*5)
+
+				// Filter tags specified but zone has empty tags - no throttling.
+				checkNoRateLimiting(t, cfg, reqsGen, 30, "some_tag")
+			},
+		},
 	}
 	configLoader := config.NewLoader(config.NewViperAdapter())
 	for _, tt := range tests {

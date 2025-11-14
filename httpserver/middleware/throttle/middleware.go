@@ -151,8 +151,13 @@ func makeRoutes(
 			continue
 		}
 
-		if len(opts.Tags) != 0 && !throttleconfig.CheckStringSlicesIntersect(opts.Tags, rule.Tags) {
-			continue
+		// If filter tags are specified in opts.Tags, check rule-level tags first.
+		// If rule-level tags match, apply all zones.
+		// If rule-level tags don't match, check zone-level tags individually.
+		filterTagsSpecified := len(opts.Tags) != 0
+		ruleLevelTagsMatch := false
+		if filterTagsSpecified {
+			ruleLevelTagsMatch = throttleconfig.CheckStringSlicesIntersect(opts.Tags, rule.Tags)
 		}
 
 		var middlewares []func(http.Handler) http.Handler
@@ -164,6 +169,17 @@ func makeRoutes(
 			if !ok {
 				return nil, fmt.Errorf("in-flight zone %q is not defined", zoneName)
 			}
+
+			// Check if this zone should be applied based on tags.
+			if filterTagsSpecified && !ruleLevelTagsMatch {
+				// Rule-level tags didn't match, so check zone-level tags.
+				zoneLevelTagsMatch := throttleconfig.CheckStringSlicesIntersect(opts.Tags, rule.InFlightLimits[i].Tags)
+				if !zoneLevelTagsMatch {
+					// Neither rule-level nor zone-level tags match, skip this zone.
+					continue
+				}
+			}
+
 			var inFlightLimitMw func(next http.Handler) http.Handler
 			inFlightLimitMw, err = InFlightLimitMiddlewareWithOpts(
 				&cfgZone, errDomain, rule.Name(), mc, opts.InFlightLimitOpts())
@@ -180,6 +196,17 @@ func makeRoutes(
 			if !ok {
 				return nil, fmt.Errorf("rate limit zone %q is not defined", zoneName)
 			}
+
+			// Check if this zone should be applied based on tags.
+			if filterTagsSpecified && !ruleLevelTagsMatch {
+				// Rule-level tags didn't match, so check zone-level tags.
+				zoneLevelTagsMatch := throttleconfig.CheckStringSlicesIntersect(opts.Tags, rule.RateLimits[i].Tags)
+				if !zoneLevelTagsMatch {
+					// Neither rule-level nor zone-level tags match, skip this zone.
+					continue
+				}
+			}
+
 			var rateLimitMw func(next http.Handler) http.Handler
 			rateLimitMw, err = RateLimitMiddlewareWithOpts(
 				&cfgZone, errDomain, rule.Name(), mc, opts.RateLimitOpts())
@@ -189,11 +216,14 @@ func makeRoutes(
 			middlewares = append(middlewares, rateLimitMw)
 		}
 
-		for _, cfgRoute := range rule.Routes {
-			routes = append(routes, restapi.NewRoute(cfgRoute, nil, middlewares))
-		}
-		for _, exclCfgRoute := range rule.ExcludedRoutes {
-			routes = append(routes, restapi.NewExcludedRoute(exclCfgRoute))
+		// Only add routes if at least one middleware was created.
+		if len(middlewares) > 0 {
+			for _, cfgRoute := range rule.Routes {
+				routes = append(routes, restapi.NewRoute(cfgRoute, nil, middlewares))
+			}
+			for _, exclCfgRoute := range rule.ExcludedRoutes {
+				routes = append(routes, restapi.NewExcludedRoute(exclCfgRoute))
+			}
 		}
 	}
 

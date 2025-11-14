@@ -209,7 +209,25 @@ The package collects several metrics in the Prometheus format:
 
 ## Tags
 
-Tags are useful when different rules of the same configuration should be used by different middlewares. For example, suppose you want to have two different throttling rules:
+Tags are useful when different rules of the same configuration should be used by different middlewares. Tags can be applied at two levels:
+
+1. **Rule-level tags** - Apply to the entire rule and all its zones
+2. **Zone-level tags** - Apply to individual rate limit or in-flight limit zones within a rule
+
+### Tag Filtering Behavior
+
+When filter tags are specified in `MiddlewareOpts.Tags`:
+
+- If **rule-level tags** match the filter tags, **all zones** in that rule are applied
+- If rule-level tags don't match, **zone-level tags** are checked individually
+- Only zones with matching zone-level tags are applied
+- If neither rule-level nor zone-level tags match (including when both are empty), the zone is skipped
+
+When **no filter tags** are specified, all rules and zones are applied.
+
+### Example: Rule-level Tags
+
+Suppose you want to have two different throttling rules:
 
  1. A rule for all requests.
  2. A rule for all identity-aware (authorized) requests.
@@ -246,6 +264,83 @@ In your code, you will have two middlewares that will be executed at different s
 allMw := MiddlewareWithOpts(cfg, "my-app-domain", throttleMetrics, MiddlewareOpts{Tags: []string{"all_reqs"}})
 requireAuthMw := MiddlewareWithOpts(cfg, "my-app-domain", throttleMetrics, MiddlewareOpts{Tags: []string{"require_auth_reqs"}})
 ```
+
+### Example: Zone-level Tags
+
+Zone-level tags allow fine-grained control over which specific rate limit or in-flight limit zones are applied. This is useful when you want different zones within the same rule to be conditionally applied based on the middleware context.
+
+```yaml
+rateLimitZones:
+  rl_general:
+    rateLimit: 100/s
+    burstLimit: 200
+    responseStatusCode: 429
+    
+  rl_strict:
+    rateLimit: 10/s
+    burstLimit: 20
+    responseStatusCode: 429
+
+inFlightLimitZones:
+  ifl_general:
+    inFlightLimit: 100
+    responseStatusCode: 503
+    
+  ifl_strict:
+    inFlightLimit: 10
+    responseStatusCode: 503
+
+rules:
+  - routes:
+    - path: "/api"
+      methods: GET,POST,PUT,DELETE
+    rateLimits:
+      - zone: rl_general
+        tags: public_api
+      - zone: rl_strict
+        tags: admin_api
+    inFlightLimits:
+      - zone: ifl_general
+        tags: public_api
+      - zone: ifl_strict
+        tags: admin_api
+```
+
+With this configuration, you can create different middleware instances for different API contexts:
+
+```go
+// Middleware for public API endpoints - applies general limits
+publicMw := MiddlewareWithOpts(cfg, "my-app-domain", throttleMetrics, MiddlewareOpts{
+    Tags: []string{"public_api"},
+})
+
+// Middleware for admin API endpoints - applies strict limits
+adminMw := MiddlewareWithOpts(cfg, "my-app-domain", throttleMetrics, MiddlewareOpts{
+    Tags: []string{"admin_api"},
+})
+```
+
+### Example: Tag Precedence
+
+When both rule-level and zone-level tags are present, rule-level tags take precedence:
+
+```yaml
+rules:
+  - routes:
+    - path: "/api"
+    rateLimits:
+      - zone: rl_zone1
+        tags: zone_tag_a
+      - zone: rl_zone2
+        tags: zone_tag_b
+    tags: rule_tag
+```
+
+**Behavior:**
+- If middleware filter tags include `rule_tag`, **both zones** (`rl_zone1` and `rl_zone2`) are applied, regardless of their zone-level tags
+- If middleware filter tags include `zone_tag_a` but not `rule_tag`, only `rl_zone1` is applied
+- If middleware filter tags include `zone_tag_b` but not `rule_tag`, only `rl_zone2` is applied
+- If middleware filter tags don't match either rule-level or any zone-level tags, no throttling is applied
 
 ## Dry-run mode
 
