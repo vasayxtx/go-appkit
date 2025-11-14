@@ -209,6 +209,23 @@ The package collects several metrics in the Prometheus format:
 
 ## Tags
 
+Tags provide flexible filtering of throttling rules and zones. The middleware supports two levels of tags:
+
+1. **Rule-level tags**: Applied to entire throttling rules
+2. **Zone-level tags**: Applied to individual rate limit or in-flight limit zones within a rule
+
+### Tag Filtering Logic
+
+When you specify filter tags in `MiddlewareOpts.Tags`:
+
+- **If filter tags are NOT specified**: All rules and zones are applied
+- **If filter tags ARE specified**:
+  - **Rule-level tags take precedence**: If rule-level tags match the filter tags, ALL zones in that rule are applied, regardless of their zone-level tags
+  - **Zone-level tag fallback**: If rule-level tags don't match, each zone is checked individually against the filter tags
+  - **No match = skip**: If both rule-level and zone-level tags don't match (including when both are empty), the zone is not applied
+
+### Example: Rule-Level Tags
+
 Tags are useful when different rules of the same configuration should be used by different middlewares. For example, suppose you want to have two different throttling rules:
 
  1. A rule for all requests.
@@ -246,6 +263,92 @@ In your code, you will have two middlewares that will be executed at different s
 allMw := MiddlewareWithOpts(cfg, "my-app-domain", throttleMetrics, MiddlewareOpts{Tags: []string{"all_reqs"}})
 requireAuthMw := MiddlewareWithOpts(cfg, "my-app-domain", throttleMetrics, MiddlewareOpts{Tags: []string{"require_auth_reqs"}})
 ```
+
+### Example: Zone-Level Tags
+
+Zone-level tags allow even finer-grained control by tagging individual zones within a rule. This is useful when you want different middlewares to apply different subsets of throttling zones from the same rule.
+
+```yaml
+rateLimitZones:
+  rl_global:
+    rateLimit: 1000/s
+    burstLimit: 2000
+    responseStatusCode: 503
+    responseRetryAfter: 5s
+
+  rl_identity:
+    rateLimit: 50/s
+    burstLimit: 100
+    responseStatusCode: 429
+    responseRetryAfter: auto
+    key:
+      type: identity
+    maxKeys: 50000
+
+inFlightLimitZones:
+  ifl_identity:
+    inFlightLimit: 64
+    backlogLimit: 128
+    backlogTimeout: 30s
+    responseStatusCode: 429
+    key:
+      type: identity
+    maxKeys: 50000
+
+rules:
+  - routes:
+      - path: "/api/v1"
+    rateLimits:
+      - zone: rl_global
+        tags: global_limit
+      - zone: rl_identity
+        tags: auth_limit
+    inFlightLimits:
+      - zone: ifl_identity
+        tags: auth_limit
+    tags: api_v1
+```
+
+In this configuration:
+
+```go
+// Middleware with "api_v1" tag: applies ALL zones (rule-level match takes precedence)
+apiMw := MiddlewareWithOpts(cfg, "my-app-domain", throttleMetrics, MiddlewareOpts{Tags: []string{"api_v1"}})
+
+// Middleware with "global_limit" tag: applies only rl_global zone
+globalMw := MiddlewareWithOpts(cfg, "my-app-domain", throttleMetrics, MiddlewareOpts{Tags: []string{"global_limit"}})
+
+// Middleware with "auth_limit" tag: applies rl_identity and ifl_identity zones
+authMw := MiddlewareWithOpts(cfg, "my-app-domain", throttleMetrics, MiddlewareOpts{Tags: []string{"auth_limit"}})
+
+// Middleware with "other_tag" tag: applies nothing (no matches)
+otherMw := MiddlewareWithOpts(cfg, "my-app-domain", throttleMetrics, MiddlewareOpts{Tags: []string{"other_tag"}})
+
+// Middleware with no tags: applies ALL zones (no filtering)
+allMw := MiddlewareWithOpts(cfg, "my-app-domain", throttleMetrics, MiddlewareOpts{})
+```
+
+### Tag Precedence Example
+
+```yaml
+rules:
+  - routes:
+      - path: "/api"
+    rateLimits:
+      - zone: zone1
+        tags: zone_tag
+      - zone: zone2
+        tags: other_tag
+    tags: rule_tag
+```
+
+With filter tags `["rule_tag"]`: Both `zone1` and `zone2` are applied (rule-level match takes precedence).
+
+With filter tags `["zone_tag"]`: Only `zone1` is applied (zone-level match).
+
+With filter tags `["rule_tag", "zone_tag"]`: Both zones are applied (rule-level match takes precedence).
+
+With filter tags `["unmatched"]`: Nothing is applied (no matches).
 
 ## Dry-run mode
 

@@ -142,6 +142,32 @@ func (h *handler) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 	nextHandler.ServeHTTP(rw, r)
 }
 
+// shouldApplyZone determines if a zone should be applied based on tag filtering logic.
+// Tag precedence: Rule-level tags take precedence. If they match - apply all zones.
+// If not - check zone-level tags individually.
+// If filter tags are specified but both rule-level and zone-level tags don't match
+// (including when both are empty), throttling should not be applied.
+func shouldApplyZone(filterTagsSpecified, applyAllZones bool, filterTags, zoneTags []string) bool {
+	// If no filter tags specified, all zones should be applied
+	if !filterTagsSpecified {
+		return true
+	}
+
+	// If rule-level tags matched, apply all zones
+	if applyAllZones {
+		return true
+	}
+
+	// Rule-level tags didn't match, check zone-level tags
+	// If zone-level tags match with filter tags, apply the zone
+	if throttleconfig.CheckStringSlicesIntersect(filterTags, zoneTags) {
+		return true
+	}
+
+	// Both rule-level and zone-level tags don't match - skip this zone
+	return false
+}
+
 // nolint: gocyclo // we would like to have high functional cohesion here.
 func makeRoutes(
 	cfg *Config, errDomain string, mc MetricsCollector, opts MiddlewareOpts,
@@ -151,15 +177,27 @@ func makeRoutes(
 			continue
 		}
 
-		if len(opts.Tags) != 0 && !throttleconfig.CheckStringSlicesIntersect(opts.Tags, rule.Tags) {
-			continue
-		}
+		// Check if filter tags are specified
+		filterTagsSpecified := len(opts.Tags) != 0
+
+		// Check rule-level tags match
+		ruleLevelMatch := throttleconfig.CheckStringSlicesIntersect(opts.Tags, rule.Tags)
+
+		// If filter tags are specified and rule-level tags match, apply all zones regardless of zone-level tags
+		applyAllZones := filterTagsSpecified && ruleLevelMatch
 
 		var middlewares []func(http.Handler) http.Handler
 
 		// Build in-flight limiting middleware.
 		for i := 0; i < len(rule.InFlightLimits); i++ {
 			zoneName := rule.InFlightLimits[i].Zone
+			zoneTags := rule.InFlightLimits[i].Tags
+
+			// Check if this zone should be applied
+			if !shouldApplyZone(filterTagsSpecified, applyAllZones, opts.Tags, zoneTags) {
+				continue
+			}
+
 			cfgZone, ok := cfg.InFlightLimitZones[zoneName]
 			if !ok {
 				return nil, fmt.Errorf("in-flight zone %q is not defined", zoneName)
@@ -176,6 +214,13 @@ func makeRoutes(
 		// Build rate limiting middleware.
 		for i := 0; i < len(rule.RateLimits); i++ {
 			zoneName := rule.RateLimits[i].Zone
+			zoneTags := rule.RateLimits[i].Tags
+
+			// Check if this zone should be applied
+			if !shouldApplyZone(filterTagsSpecified, applyAllZones, opts.Tags, zoneTags) {
+				continue
+			}
+
 			cfgZone, ok := cfg.RateLimitZones[zoneName]
 			if !ok {
 				return nil, fmt.Errorf("rate limit zone %q is not defined", zoneName)
@@ -189,11 +234,14 @@ func makeRoutes(
 			middlewares = append(middlewares, rateLimitMw)
 		}
 
-		for _, cfgRoute := range rule.Routes {
-			routes = append(routes, restapi.NewRoute(cfgRoute, nil, middlewares))
-		}
-		for _, exclCfgRoute := range rule.ExcludedRoutes {
-			routes = append(routes, restapi.NewExcludedRoute(exclCfgRoute))
+		// Only add routes if at least one middleware was created
+		if len(middlewares) > 0 {
+			for _, cfgRoute := range rule.Routes {
+				routes = append(routes, restapi.NewRoute(cfgRoute, nil, middlewares))
+			}
+			for _, exclCfgRoute := range rule.ExcludedRoutes {
+				routes = append(routes, restapi.NewExcludedRoute(exclCfgRoute))
+			}
 		}
 	}
 

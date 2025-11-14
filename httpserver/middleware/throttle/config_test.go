@@ -48,6 +48,12 @@ rateLimitZones:
     includedKeys: []
     dryRun: true
 
+  rate_limit_special:
+    rateLimit: 100/s
+    burstLimit: 200
+    responseStatusCode: 429
+    responseRetryAfter: 10s
+
   rate_limit_identity_window:
     key:
       type: identity
@@ -115,9 +121,13 @@ rules:
     rateLimits:
       - zone: rate_limit_identity
       - zone: rate_limit_identity_window
+        tags: special_tag
+      - zone: rate_limit_special
+        tags: ["zone_tag1", "zone_tag2"]
     inFlightLimits:
       - zone: in_flight_limit_identity
       - zone: in_flight_limit_remote_addr
+        tags: remote_limit
     tags: ["tag1", "tag2"]
 
   - alias: "limit_batches"
@@ -163,6 +173,12 @@ const jsonTestConfig = `
       ],
       "includedKeys": [],
       "dryRun": true
+    },
+    "rate_limit_special": {
+      "rateLimit": "100/s",
+      "burstLimit": 200,
+      "responseStatusCode": 429,
+      "responseRetryAfter": "10s"
     },
     "rate_limit_identity_window": {
       "key": {
@@ -242,11 +258,12 @@ const jsonTestConfig = `
       ],
       "rateLimits": [
         { "zone": "rate_limit_identity" },
-        { "zone": "rate_limit_identity_window" }
+        { "zone": "rate_limit_identity_window", "tags": "special_tag" },
+        { "zone": "rate_limit_special", "tags": ["zone_tag1", "zone_tag2"] }
       ],
       "inFlightLimits": [
         { "zone": "in_flight_limit_identity" },
-        { "zone": "in_flight_limit_remote_addr" }
+        { "zone": "in_flight_limit_remote_addr", "tags": "remote_limit" }
       ],
       "tags": ["tag1", "tag2"]
     },
@@ -272,7 +289,7 @@ func requireTestConfig(t *testing.T, cfg *Config) {
 	t.Helper()
 
 	// Check rateLimitZones
-	require.Len(t, cfg.RateLimitZones, 3)
+	require.Len(t, cfg.RateLimitZones, 4)
 	require.Equal(t, RateLimitZoneConfig{
 		ZoneConfig: ZoneConfig{
 			Key:                ZoneKeyConfig{Type: ZoneKeyTypeIdentity},
@@ -315,6 +332,17 @@ func requireTestConfig(t *testing.T, cfg *Config) {
 		BacklogTimeout:     config.TimeDuration(time.Second * 30),
 		ResponseRetryAfter: RateLimitRetryAfterValue{IsAuto: true},
 	}, cfg.RateLimitZones["rate_limit_total"])
+	require.Equal(t, RateLimitZoneConfig{
+		ZoneConfig: ZoneConfig{
+			Key:                ZoneKeyConfig{Type: ""},
+			MaxKeys:            0,
+			ResponseStatusCode: 429,
+			DryRun:             false,
+		},
+		RateLimit:          RateLimitValue{Count: 100, Duration: time.Second},
+		BurstLimit:         200,
+		ResponseRetryAfter: RateLimitRetryAfterValue{Duration: time.Second * 10},
+	}, cfg.RateLimitZones["rate_limit_special"])
 
 	// Check inFlightLimitZones
 	require.Len(t, cfg.InFlightLimitZones, 4)
@@ -383,9 +411,16 @@ func requireTestConfig(t *testing.T, cfg *Config) {
 				{Path: mustParseRoutePath("/api/2/users/42")},
 				{Path: mustParseRoutePath("/api/2/tenants/42")},
 			},
-			RateLimits:     []RuleRateLimit{{Zone: "rate_limit_identity"}, {Zone: "rate_limit_identity_window"}},
-			InFlightLimits: []RuleInFlightLimit{{Zone: "in_flight_limit_identity"}, {Zone: "in_flight_limit_remote_addr"}},
-			Tags:           []string{"tag1", "tag2"},
+			RateLimits: []RuleRateLimit{
+				{Zone: "rate_limit_identity"},
+				{Zone: "rate_limit_identity_window", Tags: []string{"special_tag"}},
+				{Zone: "rate_limit_special", Tags: []string{"zone_tag1", "zone_tag2"}},
+			},
+			InFlightLimits: []RuleInFlightLimit{
+				{Zone: "in_flight_limit_identity"},
+				{Zone: "in_flight_limit_remote_addr", Tags: []string{"remote_limit"}},
+			},
+			Tags: []string{"tag1", "tag2"},
 		},
 		{
 			Alias: "limit_batches",
