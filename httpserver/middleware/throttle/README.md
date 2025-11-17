@@ -209,7 +209,22 @@ The package collects several metrics in the Prometheus format:
 
 ## Tags
 
-Tags are useful when different rules of the same configuration should be used by different middlewares. For example, suppose you want to have two different throttling rules:
+Tags are useful when different rules of the same configuration should be used by different middlewares. Tags can be specified at two levels:
+
+1. **Rule-level tags**: Applied to entire throttling rules
+2. **Zone-level tags**: Applied to individual rate limit or in-flight limit zones within a rule
+
+### Tag Precedence
+
+When filter tags are specified in middleware options:
+- **Rule-level tags take precedence**: If a rule has tags that match the filter, all zones in that rule are applied regardless of zone-level tags
+- **Zone-level tags are checked individually**: If a rule has no tags, each zone's tags are checked against the filter
+- **Zones without tags**: When filter tags are specified and the rule has no tags, zones without tags are always applied (they match any filter)
+- **No filter tags**: If no filter tags are specified in middleware options, all rules and zones are applied
+
+### Example with rule-level tags
+
+Suppose you want to have two different throttling rules:
 
  1. A rule for all requests.
  2. A rule for all identity-aware (authorized) requests.
@@ -246,6 +261,68 @@ In your code, you will have two middlewares that will be executed at different s
 allMw := MiddlewareWithOpts(cfg, "my-app-domain", throttleMetrics, MiddlewareOpts{Tags: []string{"all_reqs"}})
 requireAuthMw := MiddlewareWithOpts(cfg, "my-app-domain", throttleMetrics, MiddlewareOpts{Tags: []string{"require_auth_reqs"}})
 ```
+
+### Example with zone-level tags
+
+Zone-level tags allow fine-grained control over which zones are applied within a rule:
+
+```yaml
+rateLimitZones:
+  rl_zone_basic:
+    rateLimit: 100/s
+    burstLimit: 200
+    responseStatusCode: 429
+    key:
+      type: identity
+    maxKeys: 50000
+
+  rl_zone_premium:
+    rateLimit: 1000/s
+    burstLimit: 2000
+    responseStatusCode: 429
+    key:
+      type: identity
+    maxKeys: 50000
+
+rules:
+  - routes:
+    - path: "/api"
+    rateLimits:
+      - zone: rl_zone_basic
+        tags: basic_tier
+      - zone: rl_zone_premium
+        tags: premium_tier
+```
+
+With this configuration, you can create different middleware instances for different user tiers:
+
+```go
+basicMw := MiddlewareWithOpts(cfg, "my-app-domain", throttleMetrics, MiddlewareOpts{
+    Tags: []string{"basic_tier"},
+    GetKeyIdentity: getBasicUserIdentity,
+})
+
+premiumMw := MiddlewareWithOpts(cfg, "my-app-domain", throttleMetrics, MiddlewareOpts{
+    Tags: []string{"premium_tier"},
+    GetKeyIdentity: getPremiumUserIdentity,
+})
+```
+
+### Mixed tags example
+
+You can also mix zones with and without tags. Zones without tags act as a baseline that's always applied:
+
+```yaml
+rules:
+  - routes:
+    - path: "/api"
+    rateLimits:
+      - zone: rl_zone_baseline  # No tags - always applied
+      - zone: rl_zone_strict
+        tags: strict_mode
+```
+
+When filtering by `strict_mode`, both `rl_zone_baseline` and `rl_zone_strict` will be applied. When no filter is specified, both zones are also applied.
 
 ## Dry-run mode
 

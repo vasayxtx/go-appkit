@@ -550,6 +550,160 @@ rules:
 				checkNoRateLimiting(t, cfg, reqsMismatchGen, 30, "tag_a")
 			},
 		},
+		{
+			Name: "zone-level tags with rule-level tags precedence",
+			CfgData: `
+rateLimitZones:
+  rl_zone1:
+    rateLimit: 1/m
+    burstLimit: 5
+    responseStatusCode: 503
+    responseRetryAfter: 5s
+  rl_zone2:
+    rateLimit: 1/m
+    burstLimit: 3
+    responseStatusCode: 503
+    responseRetryAfter: 5s
+inFlightLimitZones:
+  ifl_zone1:
+    inFlightLimit: 5
+    backlogLimit: 5
+    backlogTimeout: 30s
+    responseStatusCode: 503
+    responseRetryAfter: 5s
+rules:
+  - routes:
+    - path: "/aaa"
+      methods: POST
+    rateLimits:
+      - zone: rl_zone1
+        tags: zone_tag_a
+      - zone: rl_zone2
+        tags: zone_tag_b
+    tags: rule_tag_a
+  - routes:
+    - path: "/bbb"
+      methods: POST
+    inFlightLimits:
+      - zone: ifl_zone1
+        tags: zone_tag_c
+`,
+			Func: func(t *testing.T, cfg *Config) {
+				// Rule-level tags take precedence - all zones should be applied
+				// Both zones apply independently, so burst1=5, burst2=3
+				// First zone allows 5+1=6 requests, second zone allows 3+1=4 requests
+				// But they're applied sequentially, so the more restrictive one (zone2) limits first
+				// Actually, with leaky bucket, burst means we can send burst+1 requests immediately
+				// Zone1: burstLimit=5 means 6 requests pass
+				// Zone2: burstLimit=3 means 4 requests pass
+				// Since both are applied, the minimum is 4 requests
+				reqsGen := makeReqsGenerator([]string{"POST /aaa"})
+				checkRateLimiting(t, cfg, reqsGen, 4, 30, 503, time.Second*5, "rule_tag_a")
+
+				// Zone-level tags - only matching zones should be applied
+				reqsGen = makeReqsGenerator([]string{"POST /bbb"})
+				checkInFlightLimiting(t, cfg, checkInFlightLimitingParams{
+					reqsGen:        reqsGen,
+					totalLimit:     10,
+					reqsNum:        20,
+					unblockDelay:   time.Second,
+					wantRespCode:   503,
+					wantRetryAfter: time.Second * 5,
+					tags:           []string{"zone_tag_c"},
+				})
+
+				// Zone-level tags mismatch - no throttling
+				reqsGen = makeReqsGenerator([]string{"POST /bbb"})
+				checkNoInFlightLimiting(t, cfg, reqsGen, 20, time.Second, "zone_tag_x")
+			},
+		},
+		{
+			Name: "zone-level tags filtering",
+			CfgData: `
+rateLimitZones:
+  rl_zone1:
+    rateLimit: 1/m
+    burstLimit: 5
+    responseStatusCode: 503
+    responseRetryAfter: 5s
+  rl_zone2:
+    rateLimit: 1/m
+    burstLimit: 3
+    responseStatusCode: 503
+    responseRetryAfter: 5s
+rules:
+  - routes:
+    - path: "/aaa"
+      methods: POST
+    rateLimits:
+      - zone: rl_zone1
+        tags: tag_a
+      - zone: rl_zone2
+        tags: tag_b
+`,
+			Func: func(t *testing.T, cfg *Config) {
+				const burst1 = 5
+
+				reqsGen := makeReqsGenerator([]string{"POST /aaa"})
+
+				// Filter by tag_a - only rl_zone1 should be applied
+				checkRateLimiting(t, cfg, reqsGen, burst1+1, 30, 503, time.Second*5, "tag_a")
+
+				// Filter by tag_b - only rl_zone2 should be applied
+				const burst2 = 3
+				reqsGen = makeReqsGenerator([]string{"POST /aaa"})
+				checkRateLimiting(t, cfg, reqsGen, burst2+1, 30, 503, time.Second*5, "tag_b")
+
+				// Filter by both tags - both zones should be applied (minimum of the two)
+				reqsGen = makeReqsGenerator([]string{"POST /aaa"})
+				checkRateLimiting(t, cfg, reqsGen, burst2+1, 30, 503, time.Second*5, "tag_a", "tag_b")
+
+				// No filter tags - all zones should be applied (minimum of the two)
+				reqsGen = makeReqsGenerator([]string{"POST /aaa"})
+				checkRateLimiting(t, cfg, reqsGen, burst2+1, 30, 503, time.Second*5)
+			},
+		},
+		{
+			Name: "mixed zone-level tags - some with tags, some without",
+			CfgData: `
+rateLimitZones:
+  rl_zone1:
+    rateLimit: 1/m
+    burstLimit: 5
+    responseStatusCode: 503
+    responseRetryAfter: 5s
+  rl_zone2:
+    rateLimit: 1/m
+    burstLimit: 3
+    responseStatusCode: 503
+    responseRetryAfter: 5s
+rules:
+  - routes:
+    - path: "/aaa"
+      methods: POST
+    rateLimits:
+      - zone: rl_zone1
+        tags: tag_a
+      - zone: rl_zone2
+`,
+			Func: func(t *testing.T, cfg *Config) {
+				const burst1 = 5
+				const burst2 = 3
+
+				reqsGen := makeReqsGenerator([]string{"POST /aaa"})
+
+				// Filter by tag_a - both zones should be applied (zone1 with tag_a + zone2 without tags)
+				checkRateLimiting(t, cfg, reqsGen, burst2+1, 30, 503, time.Second*5, "tag_a")
+
+				// No filter tags - both zones should be applied (minimum of the two)
+				reqsGen = makeReqsGenerator([]string{"POST /aaa"})
+				checkRateLimiting(t, cfg, reqsGen, burst2+1, 30, 503, time.Second*5)
+
+				// Filter by non-matching tag - only zone without tags should be applied
+				reqsGen = makeReqsGenerator([]string{"POST /aaa"})
+				checkRateLimiting(t, cfg, reqsGen, burst2+1, 30, 503, time.Second*5, "tag_x")
+			},
+		},
 	}
 	configLoader := config.NewLoader(config.NewViperAdapter())
 	for _, tt := range tests {

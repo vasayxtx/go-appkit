@@ -151,8 +151,52 @@ func makeRoutes(
 			continue
 		}
 
-		if len(opts.Tags) != 0 && !throttleconfig.CheckStringSlicesIntersect(opts.Tags, rule.Tags) {
-			continue
+		// Check if filter tags are specified
+		if len(opts.Tags) != 0 {
+			// Rule-level tags take precedence
+			if len(rule.Tags) != 0 {
+				// If rule has tags, check if they match filter tags
+				if !throttleconfig.CheckStringSlicesIntersect(opts.Tags, rule.Tags) {
+					continue
+				}
+				// Rule tags match - apply all zones regardless of zone-level tags
+			} else {
+				// Rule has no tags - check zone-level tags
+				hasMatchingZone := false
+				
+				// Check rate limit zones - also count zones without tags
+				for i := 0; i < len(rule.RateLimits); i++ {
+					if len(rule.RateLimits[i].Tags) == 0 {
+						// Zone without tags always matches
+						hasMatchingZone = true
+						break
+					}
+					if throttleconfig.CheckStringSlicesIntersect(opts.Tags, rule.RateLimits[i].Tags) {
+						hasMatchingZone = true
+						break
+					}
+				}
+				
+				// Check in-flight limit zones if no match yet
+				if !hasMatchingZone {
+					for i := 0; i < len(rule.InFlightLimits); i++ {
+						if len(rule.InFlightLimits[i].Tags) == 0 {
+							// Zone without tags always matches
+							hasMatchingZone = true
+							break
+						}
+						if throttleconfig.CheckStringSlicesIntersect(opts.Tags, rule.InFlightLimits[i].Tags) {
+							hasMatchingZone = true
+							break
+						}
+					}
+				}
+				
+				// If no zone-level tags match, skip this rule
+				if !hasMatchingZone {
+					continue
+				}
+			}
 		}
 
 		var middlewares []func(http.Handler) http.Handler
@@ -160,6 +204,16 @@ func makeRoutes(
 		// Build in-flight limiting middleware.
 		for i := 0; i < len(rule.InFlightLimits); i++ {
 			zoneName := rule.InFlightLimits[i].Zone
+			zoneTags := rule.InFlightLimits[i].Tags
+			
+			// Skip zone if filter tags are specified and zone has tags that don't match
+			// (only when rule-level tags are empty)
+			if len(opts.Tags) != 0 && len(rule.Tags) == 0 && len(zoneTags) != 0 {
+				if !throttleconfig.CheckStringSlicesIntersect(opts.Tags, zoneTags) {
+					continue
+				}
+			}
+			
 			cfgZone, ok := cfg.InFlightLimitZones[zoneName]
 			if !ok {
 				return nil, fmt.Errorf("in-flight zone %q is not defined", zoneName)
@@ -176,6 +230,16 @@ func makeRoutes(
 		// Build rate limiting middleware.
 		for i := 0; i < len(rule.RateLimits); i++ {
 			zoneName := rule.RateLimits[i].Zone
+			zoneTags := rule.RateLimits[i].Tags
+			
+			// Skip zone if filter tags are specified and zone has tags that don't match
+			// (only when rule-level tags are empty)
+			if len(opts.Tags) != 0 && len(rule.Tags) == 0 && len(zoneTags) != 0 {
+				if !throttleconfig.CheckStringSlicesIntersect(opts.Tags, zoneTags) {
+					continue
+				}
+			}
+			
 			cfgZone, ok := cfg.RateLimitZones[zoneName]
 			if !ok {
 				return nil, fmt.Errorf("rate limit zone %q is not defined", zoneName)
