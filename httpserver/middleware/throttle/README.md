@@ -214,6 +214,8 @@ Tags are useful when different rules of the same configuration should be used by
  1. A rule for all requests.
  2. A rule for all identity-aware (authorized) requests.
 
+### Rule-Level Tags
+
 ```yaml
 # ...
 rules:
@@ -246,6 +248,83 @@ In your code, you will have two middlewares that will be executed at different s
 allMw := MiddlewareWithOpts(cfg, "my-app-domain", throttleMetrics, MiddlewareOpts{Tags: []string{"all_reqs"}})
 requireAuthMw := MiddlewareWithOpts(cfg, "my-app-domain", throttleMetrics, MiddlewareOpts{Tags: []string{"require_auth_reqs"}})
 ```
+
+### Zone-Level Tags
+
+In addition to rule-level tags, you can specify tags on individual rate limit and in-flight limit zones within a rule. This provides more fine-grained control over which zones are applied based on the middleware filter tags.
+
+```yaml
+rateLimitZones:
+  rl_zone1:
+    rateLimit: 100/s
+    burstLimit: 200
+  rl_zone2:
+    rateLimit: 50/s
+    burstLimit: 100
+  rl_zone3:
+    rateLimit: 10/s
+    burstLimit: 20
+
+inFlightLimitZones:
+  ifl_zone1:
+    inFlightLimit: 100
+  ifl_zone2:
+    inFlightLimit: 10
+
+rules:
+  - routes:
+    - path: "/api"
+    rateLimits:
+      - zone: rl_zone1
+        tags: global_limit
+      - zone: rl_zone2
+        tags: premium_limit
+      - zone: rl_zone3
+        tags: basic_limit
+    inFlightLimits:
+      - zone: ifl_zone1
+        tags: global_limit
+      - zone: ifl_zone2
+        tags: basic_limit
+    tags: api_rule
+```
+
+In this example:
+
+- Without filter tags, all zones are applied
+- With `Tags: []string{"global_limit"}`, only rl_zone1 and ifl_zone1 are applied
+- With `Tags: []string{"premium_limit"}`, only rl_zone2 is applied
+- With `Tags: []string{"basic_limit"}`, only rl_zone3 and ifl_zone2 are applied
+
+### Tag Precedence
+
+When both rule-level and zone-level tags are specified, the following precedence rules apply:
+
+1. **No filter tags specified**: All rules and all zones are applied.
+2. **Rule-level tags match filter tags**: All zones in that rule are applied, regardless of zone-level tags (rule-level takes precedence).
+3. **Rule-level tags don't match**: Each zone is checked individually against the filter tags using zone-level tags.
+4. **Both rule-level and zone-level tags are empty**: When filter tags are specified, but both rule-level and zone-level tags are empty, throttling is not applied.
+
+Example demonstrating precedence:
+
+```yaml
+rules:
+  - routes:
+    - path: "/api"
+    rateLimits:
+      - zone: rl_zone1
+        tags: zone_tag_a
+      - zone: rl_zone2
+        tags: zone_tag_b
+    tags: rule_tag_x
+```
+
+Behavior:
+- `Tags: []string{"rule_tag_x"}` → Both rl_zone1 and rl_zone2 are applied (rule-level match)
+- `Tags: []string{"zone_tag_a"}` → Only rl_zone1 is applied
+- `Tags: []string{"zone_tag_b"}` → Only rl_zone2 is applied
+- `Tags: []string{"rule_tag_x", "zone_tag_a"}` → Both zones are applied (rule-level takes precedence)
+- `Tags: []string{"other_tag"}` → No zones are applied
 
 ## Dry-run mode
 
