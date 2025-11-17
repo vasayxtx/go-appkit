@@ -151,19 +151,32 @@ func makeRoutes(
 			continue
 		}
 
-		if len(opts.Tags) != 0 && !throttleconfig.CheckStringSlicesIntersect(opts.Tags, rule.Tags) {
-			continue
-		}
+		// Check if filter tags are specified.
+		hasFilterTags := len(opts.Tags) != 0
+
+		// Check rule-level tags. If they match with filter tags, all zones should be applied.
+		ruleLevelTagsMatch := !hasFilterTags || throttleconfig.CheckStringSlicesIntersect(opts.Tags, rule.Tags)
+
+		// If filter tags are specified and rule-level tags don't match, we need to check zone-level tags.
+		// If rule-level tags match, we skip all zones without matching zone-level tags when filter tags exist.
+		checkZoneLevelTags := hasFilterTags && !ruleLevelTagsMatch
 
 		var middlewares []func(http.Handler) http.Handler
 
 		// Build in-flight limiting middleware.
 		for i := 0; i < len(rule.InFlightLimits); i++ {
 			zoneName := rule.InFlightLimits[i].Zone
+			zoneTags := rule.InFlightLimits[i].Tags
 			cfgZone, ok := cfg.InFlightLimitZones[zoneName]
 			if !ok {
 				return nil, fmt.Errorf("in-flight zone %q is not defined", zoneName)
 			}
+
+			// Apply tag filtering based on precedence.
+			if shouldSkipZone(hasFilterTags, ruleLevelTagsMatch, checkZoneLevelTags, opts.Tags, zoneTags) {
+				continue
+			}
+
 			var inFlightLimitMw func(next http.Handler) http.Handler
 			inFlightLimitMw, err = InFlightLimitMiddlewareWithOpts(
 				&cfgZone, errDomain, rule.Name(), mc, opts.InFlightLimitOpts())
@@ -176,10 +189,17 @@ func makeRoutes(
 		// Build rate limiting middleware.
 		for i := 0; i < len(rule.RateLimits); i++ {
 			zoneName := rule.RateLimits[i].Zone
+			zoneTags := rule.RateLimits[i].Tags
 			cfgZone, ok := cfg.RateLimitZones[zoneName]
 			if !ok {
 				return nil, fmt.Errorf("rate limit zone %q is not defined", zoneName)
 			}
+
+			// Apply tag filtering based on precedence.
+			if shouldSkipZone(hasFilterTags, ruleLevelTagsMatch, checkZoneLevelTags, opts.Tags, zoneTags) {
+				continue
+			}
+
 			var rateLimitMw func(next http.Handler) http.Handler
 			rateLimitMw, err = RateLimitMiddlewareWithOpts(
 				&cfgZone, errDomain, rule.Name(), mc, opts.RateLimitOpts())
@@ -187,6 +207,11 @@ func makeRoutes(
 				return nil, fmt.Errorf("make rate limit middleware for zone %q: %w", zoneName, err)
 			}
 			middlewares = append(middlewares, rateLimitMw)
+		}
+
+		// Skip the rule if no middlewares were created (all zones were filtered out).
+		if len(middlewares) == 0 {
+			continue
 		}
 
 		for _, cfgRoute := range rule.Routes {
@@ -198,6 +223,32 @@ func makeRoutes(
 	}
 
 	return routes, nil
+}
+
+// shouldSkipZone determines whether a zone should be skipped based on tag matching rules.
+// Tag precedence: Rule-level tags take precedence. If they match - apply all zones (return false).
+// If not - check zone-level tags individually.
+func shouldSkipZone(hasFilterTags, ruleLevelTagsMatch, checkZoneLevelTags bool, filterTags, zoneTags []string) bool {
+	// If no filter tags are specified, apply all zones.
+	if !hasFilterTags {
+		return false
+	}
+
+	// If rule-level tags match, apply all zones regardless of zone-level tags.
+	if ruleLevelTagsMatch {
+		return false
+	}
+
+	// If rule-level tags don't match, check zone-level tags.
+	if checkZoneLevelTags {
+		// Zone-level tags must match filter tags.
+		// If both zone tags and filter tags exist but don't intersect, skip.
+		// If zone tags are empty and filter tags exist, skip (no match).
+		return !throttleconfig.CheckStringSlicesIntersect(filterTags, zoneTags)
+	}
+
+	// This should not be reached, but skip by default.
+	return true
 }
 
 // RateLimitMiddlewareOpts represents an options for RateLimitMiddleware.

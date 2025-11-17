@@ -209,7 +209,11 @@ The package collects several metrics in the Prometheus format:
 
 ## Tags
 
-Tags are useful when different rules of the same configuration should be used by different middlewares. For example, suppose you want to have two different throttling rules:
+Tags are useful when different rules of the same configuration should be used by different middlewares. Tags can be specified at two levels: rule-level and zone-level (on individual rate/in-flight limits).
+
+### Rule-level Tags
+
+Rule-level tags allow you to filter entire rules. For example, suppose you want to have two different throttling rules:
 
  1. A rule for all requests.
  2. A rule for all identity-aware (authorized) requests.
@@ -246,6 +250,75 @@ In your code, you will have two middlewares that will be executed at different s
 allMw := MiddlewareWithOpts(cfg, "my-app-domain", throttleMetrics, MiddlewareOpts{Tags: []string{"all_reqs"}})
 requireAuthMw := MiddlewareWithOpts(cfg, "my-app-domain", throttleMetrics, MiddlewareOpts{Tags: []string{"require_auth_reqs"}})
 ```
+
+### Zone-level Tags
+
+Zone-level tags provide fine-grained control over which rate/in-flight limits are applied within a rule. You can specify tags on individual `rateLimits` and `inFlightLimits` entries:
+
+```yaml
+rateLimitZones:
+  rl_strict:
+    rateLimit: 10/s
+    burstLimit: 20
+  rl_relaxed:
+    rateLimit: 100/s
+    burstLimit: 200
+inFlightLimitZones:
+  ifl_limited:
+    inFlightLimit: 10
+  ifl_unlimited:
+    inFlightLimit: 1000
+
+rules:
+  - routes:
+    - path: "/api/v1/"
+    rateLimits:
+      - zone: rl_strict
+        tags: authenticated
+      - zone: rl_relaxed
+        tags: public
+    inFlightLimits:
+      - zone: ifl_limited
+        tags: authenticated
+      - zone: ifl_unlimited
+        tags: internal
+```
+
+In this example:
+- When filter tags `["authenticated"]` are specified, only `rl_strict` and `ifl_limited` zones are applied
+- When filter tags `["public"]` are specified, only `rl_relaxed` zone is applied
+- When filter tags `["internal"]` are specified, only `ifl_unlimited` zone is applied
+- When no filter tags are specified, all zones are applied
+
+### Tag Precedence
+
+Tag filtering follows these rules:
+
+1. **No filter tags**: All rules and zones are applied
+2. **Rule-level tags match**: All zones within the rule are applied, regardless of zone-level tags
+3. **Rule-level tags don't match**: Only zones with matching zone-level tags are applied
+4. **No match at either level**: The rule/zone is skipped
+
+Example demonstrating precedence:
+
+```yaml
+rules:
+  - routes:
+    - path: "/api/"
+    tags: api_rule
+    rateLimits:
+      - zone: rl_zone1
+        tags: strict
+      - zone: rl_zone2
+        tags: relaxed
+```
+
+Behavior:
+- Filter tags `["api_rule"]` → Both `rl_zone1` and `rl_zone2` are applied (rule-level match)
+- Filter tags `["strict"]` → Only `rl_zone1` is applied (zone-level match)
+- Filter tags `["relaxed"]` → Only `rl_zone2` is applied (zone-level match)
+- Filter tags `["other"]` → No zones are applied (no match)
+- No filter tags → Both zones are applied (default behavior)
 
 ## Dry-run mode
 
